@@ -24,14 +24,14 @@ from gpodder import util
 
 
 def aeKeyword(fourCharCode):
-    """transform four character code into a long"""
+    """Transform four character code into a long."""
     return struct.unpack('I', fourCharCode)[0]
 
 
 # for the kCoreEventClass, kAEOpenDocuments, ... constants
 # comes with macpython
 try:
-    from Carbon.AppleEvents import *
+    from Carbon.AppleEvents import *  # noqa: F403
 except ImportError:
     ...
 
@@ -46,7 +46,9 @@ try:
     from AppKit import NSAppleEventDescriptor, NSAppleEventManager, NSObject
 
     class gPodderEventHandler(NSObject):
-        """ handles Apple Events for :
+        """Handle Apple Events.
+
+        Handles Apple Events for:
             - Open With... (and dropping a file on the icon)
             - "subscribe to podcast" from firefox
         The code was largely inspired by gedit-osx-delegate.m, from the
@@ -58,22 +60,22 @@ try:
         gp = None
 
         def register(self, gp):
-            """ register all handlers with NSAppleEventManager """
+            """Register all handlers with NSAppleEventManager."""
             self.gp = gp
             aem = NSAppleEventManager.sharedAppleEventManager()
             aem.setEventHandler_andSelector_forEventClass_andEventID_(
-                self, 'openFileEvent:reply:', aeKeyword(kCoreEventClass), aeKeyword(kAEOpenDocuments))
+                self, 'openFileEvent:reply:', aeKeyword(kCoreEventClass), aeKeyword(kAEOpenDocuments))  # noqa: F405
             aem.setEventHandler_andSelector_forEventClass_andEventID_(
                 self, 'subscribeEvent:reply:', aeKeyword('GURL'), aeKeyword('GURL'))
 
         def openFileEvent_reply_(self, event, reply):
-            """ handles an 'Open With...' event"""
+            """Handle an 'Open With...' event."""
             urls = []
-            filelist = event.paramDescriptorForKeyword_(aeKeyword(keyDirectObject))
+            filelist = event.paramDescriptorForKeyword_(aeKeyword(keyDirectObject))  # noqa: F405
             numberOfItems = filelist.numberOfItems()
             for i in range(1, numberOfItems + 1):
                 fileAliasDesc = filelist.descriptorAtIndex_(i)
-                fileURLDesc = fileAliasDesc.coerceToDescriptorType_(aeKeyword(typeFileURL))
+                fileURLDesc = fileAliasDesc.coerceToDescriptorType_(aeKeyword(typeFileURL))  # noqa: F405
                 fileURLData = fileURLDesc.data()
                 url = memoryview(fileURLData.bytes(), 0, fileURLData.length())
                 url = str(url)
@@ -85,8 +87,8 @@ try:
             reply.setParamDescriptor_forKeyword_(result, aeKeyword('----'))
 
         def subscribeEvent_reply_(self, event, reply):
-            """ handles a 'Subscribe to...' event"""
-            filelist = event.paramDescriptorForKeyword_(aeKeyword(keyDirectObject))
+            """Handle a 'Subscribe to...' event."""
+            filelist = event.paramDescriptorForKeyword_(aeKeyword(keyDirectObject))  # noqa: F405
             fileURLData = filelist.data()
             url = memoryview(fileURLData.bytes(), 0, fileURLData.length())
             url = str(url)
@@ -106,6 +108,6 @@ except ImportError:
 
 
 def register_handlers(gp):
-    """ register the events handlers (and keep a reference to gPodder's instance)"""
+    """Register the events handlers (and keep a reference to gPodder's instance)."""
     if handler is not None:
         handler.register(gp)

@@ -26,6 +26,7 @@ import logging
 import re
 import urllib
 import xml.etree.ElementTree
+from functools import lru_cache
 from html.parser import HTMLParser
 from urllib.parse import parse_qs
 
@@ -173,21 +174,21 @@ def get_fmt_ids(youtube_config, allow_partial):
         if youtube_config.preferred_hls_fmt_id == 0:
             hls_fmt_ids = (youtube_config.preferred_hls_fmt_ids if youtube_config.preferred_hls_fmt_ids else [])
         else:
-            format = hls_formats_dict.get(youtube_config.preferred_hls_fmt_id)
-            if format is None:
+            fmt = hls_formats_dict.get(youtube_config.preferred_hls_fmt_id)
+            if fmt is None:
                 hls_fmt_ids = []
             else:
-                hls_fmt_ids, path, description = format
+                hls_fmt_ids, path, description = fmt
     else:
         hls_fmt_ids = []
 
     if youtube_config.preferred_fmt_id == 0:
         return (youtube_config.preferred_fmt_ids + hls_fmt_ids if youtube_config.preferred_fmt_ids else hls_fmt_ids)
 
-    format = formats_dict.get(youtube_config.preferred_fmt_id)
-    if format is None:
+    fmt = formats_dict.get(youtube_config.preferred_fmt_id)
+    if fmt is None:
         return hls_fmt_ids
-    fmt_ids, path, description = format
+    fmt_ids, path, description = fmt
     return fmt_ids + hls_fmt_ids
 
 
@@ -341,24 +342,24 @@ def get_real_download_url(url, allow_partial, preferred_fmt_ids=None):
                 raise YouTubeError('Unsupported DRM content')
             raise YouTubeError('No formats found')
 
-        formats_available = set(fmt_id for fmt_id, url in fmt_id_url_map)
+        formats_available = {fmt_id for fmt_id, url in fmt_id_url_map}
         fmt_id_url_map = dict(fmt_id_url_map)
 
-        for id in preferred_fmt_ids:
-            if not re.search(r'^[0-9]+$', str(id)):
+        for fmt_id in preferred_fmt_ids:
+            if not re.search(r'^[0-9]+$', str(fmt_id)):
                 # skip non-integer formats 'best', '136+140' or twitch '720p'
                 continue
-            id = int(id)
-            if id in formats_available:
-                format = formats_dict.get(id) or hls_formats_dict.get(id)
-                if format is not None:
-                    _, _, description = format
+            fmt_id = int(fmt_id)
+            if fmt_id in formats_available:
+                fmt = formats_dict.get(fmt_id) or hls_formats_dict.get(fmt_id)
+                if fmt is not None:
+                    _, _, description = fmt
                 else:
                     description = 'Unknown'
 
                 logger.info('Found YouTube format: %s (fmt_id=%d)',
-                        description, id)
-                url, duration = fmt_id_url_map[id]
+                        description, fmt_id)
+                url, duration = fmt_id_url_map[fmt_id]
                 break
         else:
             raise YouTubeError('No preferred formats found')
@@ -366,8 +367,13 @@ def get_real_download_url(url, allow_partial, preferred_fmt_ids=None):
     return url, duration
 
 
+@lru_cache(1)
 def get_youtube_id(url):
     r = re.compile(r'http[s]?://(?:[a-z]+\.)?youtube\.com/watch\?v=([^&]*)', re.IGNORECASE).match(url)
+    if r is not None:
+        return r.group(1)
+
+    r = re.compile(r'http[s]?://(?:[a-z]+\.)?youtube\.com/shorts/([^?]*)', re.IGNORECASE).match(url)
     if r is not None:
         return r.group(1)
 
@@ -391,8 +397,8 @@ def is_youtube_guid(guid):
 
 
 def for_each_feed_pattern(func, url, fallback_result):
-    """
-    Try to find the username for all possible YouTube feed/webpage URLs
+    """Try to find the username for all possible YouTube feed/webpage URLs.
+
     Will call func(url, channel) for each match, and if func() returns
     a result other than None, returns this. If no match is found or
     func() returns None, return fallback_result.
@@ -427,30 +433,58 @@ def get_real_channel_url(url):
     return for_each_feed_pattern(return_user_feed, url, url)
 
 
-def get_channel_id_url(url):
+@lru_cache(1)
+def get_channel_id_url(url, feed_data=None):
     if 'youtube.com' in url:
+        # URL may contain channel ID, avoid a network request
+        m = re.search(r'channel_id=([^"]+)', url)
+        if m:
+            # old versions of gpodder allowed newlines and whitespace in feed URLs, strip here to avoid a 404
+            channel_id = m.group(1).strip()
+            channel_url = 'https://www.youtube.com/channel/{}'.format(channel_id)
+            return channel_url
+
         try:
-            req = util.urlopen(url)
-            # video page may contain corrupt HTML/XML, search for tag to avoid exception
-            m = re.search(r'<meta itemprop="channelId" content="([^"]+)">', req.text)
-            if m:
-                channel_id = m.group(1)
+            if feed_data is None:
+                r = util.urlopen(url, cookies={'SOCS': 'CAI'})
+                if not r.ok:
+                    raise YouTubeError('Youtube "%s": %d %s' % (url, r.status_code, r.reason))
             else:
-                raw_xml_data = io.BytesIO(req.content)
+                r = feed_data
+            # video page may contain corrupt HTML/XML, search for tag to avoid exception
+            m = re.search(r'(channel_id=([^"]+)">|"channelId":"([^"]+)")', r.text)
+            if m:
+                channel_id = m.group(2) or m.group(3)
+            else:
+                raw_xml_data = io.BytesIO(r.content)
                 xml_data = xml.etree.ElementTree.parse(raw_xml_data)
                 channel_id = xml_data.find("{http://www.youtube.com/xml/schemas/2015}channelId").text
+                if channel_id is None:
+                    # check entries if feed has an empty channelId
+                    m = re.search(r'<yt:channelId>([^<]+)</yt:channelId>', r.text)
+                    if m:
+                        channel_id = m.group(1)
+                    if channel_id is None:
+                        raise Exception('Could not retrieve YouTube channel ID for URL %s.' % url)
+
+                # feeds no longer contain the required "UC" prefix on channel ID
+                if len(channel_id) == 22:
+                    channel_id = "UC" + channel_id
             channel_url = 'https://www.youtube.com/channel/{}'.format(channel_id)
             return channel_url
 
         except Exception:
-            logger.warning('Could not retrieve youtube channel id.', exc_info=True)
+            logger.warning('Could not retrieve YouTube channel ID for URL %s.' % url, exc_info=True)
+
+    raise Exception('Could not retrieve YouTube channel ID for URL %s.' % url)
 
 
-def get_cover(url):
+def get_cover(url, feed_data=None):
     if 'youtube.com' in url:
 
         class YouTubeHTMLCoverParser(HTMLParser):
-            """This custom html parser searches for the youtube channel thumbnail/avatar"""
+            """This custom html parser searches for the youtube channel thumbnail/avatar."""
+
             def __init__(self):
                 super().__init__()
                 self.url = []
@@ -471,8 +505,11 @@ def get_cover(url):
                     self.url.append(attribute_dict['src'])
 
         try:
-            channel_url = get_channel_id_url(url)
-            html_data = util.response_text(util.urlopen(channel_url))
+            channel_url = get_channel_id_url(url, feed_data)
+            r = util.urlopen(channel_url)
+            if not r.ok:
+                raise YouTubeError('Youtube "%s": %d %s' % (url, r.status_code, r.reason))
+            html_data = util.response_text(r)
             parser = YouTubeHTMLCoverParser()
             parser.feed(html_data)
             if parser.url:
@@ -484,8 +521,8 @@ def get_cover(url):
 
 
 def get_gdpr_consent_url(html_data):
-    """
-    Creates the URL for automatically accepting GDPR consents
+    """Create the URL for automatically accepting GDPR consents.
+
     EU GDPR redirects to a form that needs to be posted to be redirected to a get request
     with the form data as input to the youtube video URL. This extracts that form data from
     the GDPR form and builds up the URL the posted form results.
@@ -519,15 +556,16 @@ def get_gdpr_consent_url(html_data):
         logger.debug('YouTube GDPR accept consent URL is: %s', parser.url)
         return parser.url
     else:
-        logger.debug('YouTube GDPR accepted consent URL could not be resolved.', parser.url)
+        logger.debug('YouTube GDPR accepted consent URL could not be resolved.')
         raise YouTubeError('No acceptable GDPR consent URL')
 
 
-def get_channel_desc(url):
+def get_channel_desc(url, feed_data=None):
     if 'youtube.com' in url:
 
         class YouTubeHTMLDesc(HTMLParser):
             """This custom html parser searches for the YouTube channel description."""
+
             def __init__(self):
                 super().__init__()
                 self.description = ''
@@ -542,8 +580,11 @@ def get_channel_desc(url):
                     self.description = attribute_dict['content']
 
         try:
-            channel_url = get_channel_id_url(url)
-            html_data = util.response_text(util.urlopen(channel_url))
+            channel_url = get_channel_id_url(url, feed_data)
+            r = util.urlopen(channel_url)
+            if not r.ok:
+                raise YouTubeError('Youtube "%s": %d %s' % (url, r.status_code, r.reason))
+            html_data = util.response_text(r)
             parser = YouTubeHTMLDesc()
             parser.feed(html_data)
             if parser.description:
@@ -558,8 +599,8 @@ def get_channel_desc(url):
 
 
 def parse_youtube_url(url):
-    """
-    Youtube Channel Links are parsed into youtube feed links
+    """Parse Youtube Channel Links into youtube feed links.
+
     >>> parse_youtube_url("https://www.youtube.com/channel/CHANNEL_ID")
     'https://www.youtube.com/feeds/videos.xml?channel_id=CHANNEL_ID'
 
@@ -609,10 +650,11 @@ def parse_youtube_url(url):
             return new_url
 
         # look for channel URL in page
+        logger.debug("Unknown Youtube URL, trying to extract channel ID...")
         new_url = get_channel_id_url(url)
         if new_url:
             logger.debug("New Youtube URL: {}".format(new_url))
-            return new_url
+            return parse_youtube_url(new_url)
 
     logger.debug("Not a valid Youtube URL: {}".format(url))
     return url

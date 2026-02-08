@@ -23,9 +23,14 @@ import os
 import sys
 import xml.etree.ElementTree as ET
 
-import dbus
-import dbus.service
-from dbus.mainloop.glib import DBusGMainLoop
+try:
+    import dbus
+    import dbus.service
+    from dbus.mainloop.glib import DBusGMainLoop
+except ImportError:
+    print("Error: 'dbus' module not found. Either dbus-python or fake-dbus is required",
+          file=sys.stderr)
+    sys.exit(1)
 
 import gpodder
 from gpodder import core, util
@@ -38,7 +43,7 @@ from .model import Model
 
 import gi  # isort:skip
 gi.require_version('Gtk', '3.0')  # isort:skip
-from gi.repository import GdkPixbuf, Gio, GObject, Gtk  # isort:skip
+from gi.repository import GdkPixbuf, Gio, GLib, Gtk  # isort:skip
 
 
 logger = logging.getLogger(__name__)
@@ -48,8 +53,8 @@ N_ = gpodder.ngettext
 
 
 def parse_app_menu_for_accels(filename):
-    """
-    grab (accelerator, action) bindings from menus.ui.
+    """Grab (accelerator, action) bindings from menus.ui.
+
     See #815 Ctrl-Q doesn't quit for justification.
     Unfortunately it's not available from the Gio.MenuModel we get from the Gtk.Builder,
     so we get it ourself.
@@ -80,7 +85,9 @@ class gPodderApplication(Gtk.Application):
                          flags=Gio.ApplicationFlags.FLAGS_NONE)
         self.window = None
         self.options = options
+        self.gdbus_connection = None
         self.connect('window-removed', self.on_window_removed)
+        self.connect('notify::is-registered', self.on_notify_is_registered)
 
     def create_actions(self):
         action = Gio.SimpleAction.new('about', None)
@@ -93,6 +100,10 @@ class gPodderApplication(Gtk.Application):
 
         action = Gio.SimpleAction.new('help', None)
         action.connect('activate', self.on_help_activate)
+        self.add_action(action)
+
+        action = Gio.SimpleAction.new('logs', None)
+        action.connect('activate', self.on_logs_activate)
         self.add_action(action)
 
         action = Gio.SimpleAction.new('preferences', None)
@@ -111,6 +122,10 @@ class gPodderApplication(Gtk.Application):
         action.connect('activate', self.on_menu)
         self.add_action(action)
 
+        action = Gio.SimpleAction.new('subscribe_to_url', GLib.VariantType.new('s'))
+        action.connect('activate', self.on_subscribe_to_url_activate)
+        self.add_action(action)
+
     def do_startup(self):
         Gtk.Application.do_startup(self)
 
@@ -118,6 +133,7 @@ class gPodderApplication(Gtk.Application):
 
         builder = Gtk.Builder()
         builder.set_translation_domain(gpodder.textdomain)
+        self.builder = builder
 
         menu_filename = None
         for ui_folder in gpodder.ui_folders:
@@ -132,6 +148,7 @@ class gPodderApplication(Gtk.Application):
             logger.error('Cannot find gtk/menus.ui in %r, exiting' % gpodder.ui_folders)
             sys.exit(1)
 
+        self.menu_extras = builder.get_object('menuExtras')
         self.menu_view_columns = builder.get_object('menuViewColumns')
         self.set_menubar(menubar)
 
@@ -165,13 +182,13 @@ class gPodderApplication(Gtk.Application):
 
         Gtk.Window.set_default_icon_name('gpodder')
 
+        # FIXME: we want to get rid of dbus dependency
         try:
             dbus_main_loop = DBusGMainLoop(set_as_default=True)
             gpodder.dbus_session_bus = dbus.SessionBus(dbus_main_loop)
 
-            self.bus_name = dbus.service.BusName(gpodder.dbus_bus_name, bus=gpodder.dbus_session_bus)
         except dbus.exceptions.DBusException as dbe:
-            logger.warn('Cannot get "on the bus".', exc_info=True)
+            logger.warning('Cannot get "on the bus".', exc_info=True)
             dlg = Gtk.MessageDialog(None, Gtk.DialogFlags.MODAL, Gtk.MessageType.ERROR,
                    Gtk.ButtonsType.CLOSE, _('Cannot start gPodder'))
             dlg.format_secondary_markup(_('D-Bus error: %s') % (str(dbe),))
@@ -179,6 +196,27 @@ class gPodderApplication(Gtk.Application):
             dlg.run()
             dlg.destroy()
             sys.exit(0)
+
+        # Using GDBus
+        try:
+            self.loop = GLib.MainLoop()
+            self.owner_id = Gio.bus_own_name(
+                # Specify connection to the session bus:
+                Gio.BusType.SESSION,
+                # Set the well-known name:
+                gpodder.dbus_bus_name,
+                # Provide any flags
+                # (for example, to allow replacement):
+                Gio.BusNameOwnerFlags.DO_NOT_QUEUE,
+                # Provide handler 1 (bus_acquired):
+                self.on_bus_acquired,
+                # Provide handler 2 (name_acquired):
+                None,
+                # Provide handler 3 (name_lost):
+                None,
+            )
+        except Exception as e:
+            logger.warning("Name Already clamed: %r", e, exc_info=True)
         util.idle_add(self.check_root_folder_path_gui)
 
     def do_activate(self):
@@ -186,7 +224,7 @@ class gPodderApplication(Gtk.Application):
         if not self.window:
             # Windows are associated with the application
             # when the last one is closed the application shuts down
-            self.window = gPodder(self, self.bus_name, core.Core(UIConfig, model_class=Model), self.options)
+            self.window = gPodder(self, core.Core(UIConfig, model_class=Model), self.options)
 
             if gpodder.ui.osx:
                 from . import macosx
@@ -194,7 +232,74 @@ class gPodderApplication(Gtk.Application):
                 # Handle "subscribe to podcast" events from firefox
                 macosx.register_handlers(self.window)
 
+            # Set dark mode from color_scheme config key, or from Settings portal
+            # if it exists and color_scheme is 'system'.
+            if getattr(gpodder.dbus_session_bus, 'fake', False):
+                self.have_settings_portal = False
+                self._set_default_color_scheme('light')
+                self.set_dark_mode(self.window.config.ui.gtk.color_scheme == 'dark')
+            else:
+                self.read_portal_color_scheme()
+                gpodder.dbus_session_bus.add_signal_receiver(
+                    self.on_portal_setting_changed, "SettingChanged", None,
+                    "org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop")
+
         self.window.gPodder.present()
+
+    def _set_default_color_scheme(self, default):
+        """Set the default value for color_scheme based on GTK settings.
+
+        If gtk_application_prefer_dark_theme is set to 1 (a non-default value),
+        the user has set it in GTK settings.ini and we set color_scheme to match
+        this preference. Otherwise we set the key to the given default, which
+        should be 'system' in case Settings portal is found, or 'light' if it's not.
+        """
+        if self.window.config.ui.gtk.color_scheme is None:
+            settings = Gtk.Settings.get_default()
+            self.window.config.ui.gtk.color_scheme = (
+                'dark' if settings.props.gtk_application_prefer_dark_theme == 1
+                else default)
+
+    def set_dark_mode(self, dark):
+        settings = Gtk.Settings.get_default()
+        settings.props.gtk_application_prefer_dark_theme = 1 if dark else 0
+
+    def read_portal_color_scheme(self):
+        gpodder.dbus_session_bus.call_async(
+            "org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop",
+            "org.freedesktop.portal.Settings", "ReadOne", "ss",
+            ("org.freedesktop.appearance", "color-scheme"),
+            self.on_portal_settings_read, self.on_portal_settings_read_error)
+
+    def on_portal_settings_read(self, value):
+        self.have_settings_portal = True
+        self._set_default_color_scheme('system')
+        if self.window.config.ui.gtk.color_scheme == 'system':
+            self.set_dark_mode(value == 1)
+        else:
+            self.set_dark_mode(self.window.config.ui.gtk.color_scheme == 'dark')
+
+    def on_portal_settings_read_error(self, value):
+        self.have_settings_portal = False
+        self._set_default_color_scheme('light')
+        self.set_dark_mode(self.window.config.ui.gtk.color_scheme == 'dark')
+
+    def on_portal_setting_changed(self, namespace, key, value):
+        if (namespace == 'org.freedesktop.appearance'
+                and key == 'color-scheme'):
+            dark = (value == 1)
+            if self.window.config.ui.gtk.color_scheme == 'system':
+                logger.debug(
+                    f"'color-scheme' changed to {value}, setting dark mode to {dark}")
+                self.set_dark_mode(dark)
+
+    def on_notify_is_registered(self, params, _data):
+        if self.get_is_registered() and self.get_is_remote():
+            logger.info('Activating existing instance via D-Bus.')
+            if self.options.subscribe:
+                logger.info("Subscribing to %s" % self.options.subscribe)
+                self.activate_action('subscribe_to_url', GLib.Variant('s', self.options.subscribe))
+                Gio.bus_get_sync(Gio.BusType.SESSION, None).flush_sync(None)
 
     def on_menu(self, action, param):
         self.menu_popover.popup()
@@ -209,6 +314,7 @@ class gPodderApplication(Gtk.Application):
         pb = GdkPixbuf.Pixbuf.new_from_file_at_size(gpodder.icon_file, 160, 160)
         bg.pack_start(Gtk.Image.new_from_pixbuf(pb), False, False, 0)
         label = Gtk.Label(justify=Gtk.Justification.CENTER)
+        label.set_selectable(True)
         label.set_markup('\n'.join(x.strip() for x in """
         <b>gPodder {version} ({date})</b>
 
@@ -241,10 +347,16 @@ class gPodderApplication(Gtk.Application):
         self.window.on_gPodder_delete_event()
 
     def on_window_removed(self, *args):
+        if self.owner_id:
+            Gio.bus_unown_name(self.owner_id)
+            self.owner_id = None
         self.quit()
 
     def on_help_activate(self, action, param):
         util.open_website('https://gpodder.github.io/docs/')
+
+    def on_logs_activate(self, action, param):
+        util.gui_open(os.path.join(gpodder.home, 'Logs'), gui=self.window)
 
     def on_itemPreferences_activate(self, action, param=None):
         gPodderPreferences(self.window.gPodder,
@@ -255,7 +367,8 @@ class gPodderApplication(Gtk.Application):
                 on_send_full_subscriptions=self.window.on_send_full_subscriptions,
                 on_itemExportChannels_activate=self.window.on_itemExportChannels_activate,
                 on_extension_enabled=self.on_extension_enabled,
-                on_extension_disabled=self.on_extension_disabled)
+                on_extension_disabled=self.on_extension_disabled,
+                have_settings_portal=self.have_settings_portal)
 
     def on_goto_mygpo(self, action, param):
         self.window.mygpo_client.open_website()
@@ -266,11 +379,19 @@ class gPodderApplication(Gtk.Application):
         else:
             self.window.check_for_updates(silent=False)
 
+    def on_subscribe_to_url_activate(self, action, param):
+        self.window.subscribe_to_url(param.get_string())
+
     def on_extension_enabled(self, extension):
         self.window.on_extension_enabled(extension)
 
     def on_extension_disabled(self, extension):
         self.window.on_extension_disabled(extension)
+
+    def on_bus_acquired(self, conn, name):
+        self.gdbus_connection = conn
+        if self.window:
+            self.window.on_bus_acquired(conn)
 
     @staticmethod
     def check_root_folder_path_gui():
@@ -284,7 +405,7 @@ class gPodderApplication(Gtk.Application):
 
 
 def main(options=None):
-    GObject.set_application_name('gPodder')
+    GLib.set_application_name('gPodder')
 
     gp = gPodderApplication(options)
     gp.run()

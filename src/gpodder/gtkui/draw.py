@@ -28,8 +28,6 @@ import math
 
 import cairo
 
-import gpodder
-
 import gi  # isort:skip
 gi.require_version('Gdk', '3.0')  # isort:skip
 gi.require_version('Gtk', '3.0')  # isort:skip
@@ -39,8 +37,8 @@ from gi.repository import Gdk, GdkPixbuf, Gtk, Pango, PangoCairo  # isort:skip
 
 class TextExtents(object):
     def __init__(self, ctx, text):
-        tuple = ctx.text_extents(text)
-        (self.x_bearing, self.y_bearing, self.width, self.height, self.x_advance, self.y_advance) = tuple
+        extents = ctx.text_extents(text)
+        (self.x_bearing, self.y_bearing, self.width, self.height, self.x_advance, self.y_advance) = extents
 
 
 EPISODE_LIST_ICON_SIZE = 16
@@ -55,7 +53,8 @@ def draw_rounded_rectangle(ctx, x, y, w, h, r=10, left_side_width=None,
 
     x = int(x)
     offset = 0
-    if close: offset = 0.5
+    if close:
+        offset = 0.5
 
     if sides_to_draw & RRECT_LEFT_SIDE:
         ctx.move_to(x + int(left_side_width) - offset, y + h)
@@ -79,7 +78,7 @@ def draw_rounded_rectangle(ctx, x, y, w, h, r=10, left_side_width=None,
 
 
 def rounded_rectangle(ctx, x, y, width, height, radius=4.):
-    """Simple rounded rectangle algorithmn
+    """Return a rounded rectangle.
 
     http://www.cairographics.org/samples/rounded_rectangle/
     """
@@ -128,7 +127,7 @@ def draw_text_box_centered(ctx, widget, w_width, w_height, text, font_desc=None,
 
 def draw_cake(percentage, text=None, emblem=None, size=None):
     # Download percentage bar icon - it turns out the cake is a lie (d'oh!)
-    # ..but the inital idea was to have a cake-style indicator, but that
+    # ..but the initial idea was to have a cake-style indicator, but that
     # didn't work as well as the progress bar, but the name stuck..
 
     if size is None:
@@ -138,7 +137,7 @@ def draw_cake(percentage, text=None, emblem=None, size=None):
     ctx = cairo.Context(surface)
 
     bgc = get_background_color(Gtk.StateFlags.ACTIVE)
-    fgc = get_background_color(Gtk.StateFlags.SELECTED)
+    # fgc = get_background_color(Gtk.StateFlags.SELECTED)
     txc = get_foreground_color(Gtk.StateFlags.NORMAL)
 
     border = 1.5
@@ -312,9 +311,9 @@ def cake_size_from_widget(widget=None):
 
 
 def cairo_surface_to_pixbuf(s):
-    """
-    Converts a Cairo surface to a Gtk Pixbuf by
-    encoding it as PNG and using the PixbufLoader.
+    """Convert a Cairo surface to a Gtk Pixbuf.
+
+    Conversion is made by encoding it as PNG and using the PixbufLoader.
     """
     bio = io.BytesIO()
     try:
@@ -379,7 +378,8 @@ def progressbar_pixbuf(width, height, percentage):
 
 
 def get_background_color(state=Gtk.StateFlags.NORMAL, widget=Gtk.TreeView()):
-    """
+    """Get the background color.
+
     @param state state flag (e.g. Gtk.StateFlags.SELECTED to get selected background)
     @param widget specific widget to get info from.
            defaults to TreeView which has all one usually wants.
@@ -395,7 +395,8 @@ def get_background_color(state=Gtk.StateFlags.NORMAL, widget=Gtk.TreeView()):
 
 
 def get_foreground_color(state=Gtk.StateFlags.NORMAL, widget=Gtk.TreeView()):
-    """
+    """Get the foreground color.
+
     @param state state flag (e.g. Gtk.StateFlags.SELECTED to get selected text color)
     @param widget specific widget to get info from
            defaults to TreeView which has all one usually wants.
@@ -411,9 +412,9 @@ def get_foreground_color(state=Gtk.StateFlags.NORMAL, widget=Gtk.TreeView()):
 
 
 def investigate_widget_colors(type_classes_and_widgets):
-    """
-    investigate using Gtk.StyleContext to get widget style properties
-    I tried to compare gettings values from static and live widgets.
+    """Investigate using Gtk.StyleContext to get widget style properties.
+
+    I tried to compare values from static and live widgets.
     To sum up, better use the live widget, because you'll get the correct path, classes, regions automatically.
     See "CSS Nodes" in widget documentation for classes and sub-nodes (=regions).
     WidgetPath and Region are replaced by CSSNodes in gtk4.
@@ -484,10 +485,10 @@ def investigate_widget_colors(type_classes_and_widgets):
         f.write("</table></html>\n")
 
 
-def draw_iconcell_scale(column, cell, model, iter, scale):
-    """
-    Draw cell's pixbuf to a surface with proper scaling for high resolution
-    displays. To be used as gtk.TreeViewColumn.set_cell_data_func.
+def draw_iconcell_scale(column, cell, model, iterator, scale):
+    """Draw cell's pixbuf to a surface with proper scaling for high resolution displays.
+
+    To be used as gtk.TreeViewColumn.set_cell_data_func.
 
     :param column: gtk.TreeViewColumn (ignored)
     :param cell: gtk.CellRenderer

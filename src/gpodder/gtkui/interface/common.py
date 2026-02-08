@@ -18,9 +18,8 @@
 #
 
 import os
-import shutil
 
-from gi.repository import Gdk, Gtk
+from gi.repository import Gdk, Gio, Gtk
 
 import gpodder
 from gpodder import util
@@ -75,8 +74,33 @@ class BuilderWidget(GtkBuilderWidget):
         util.idle_add(self.show_message, message, title, important, widget)
 
     def get_dialog_parent(self):
-        """Return a Gtk.Window that should be the parent of dialogs"""
+        """Return a Gtk.Window that should be the parent of dialogs."""
         return self.main_window
+
+    @staticmethod
+    def add_password_reveal(widget):
+        def _toggle_visibility(*args):
+            new_visible = not widget.get_visibility()
+            widget.set_visibility(new_visible)
+            if new_visible:
+                widget.set_property('secondary-icon-name', 'view-conceal-symbolic')
+            else:
+                widget.set_property('secondary-icon-name', 'view-reveal-symbolic')
+
+        def _on_press(_widget, _icon_position, _event):
+            _toggle_visibility()
+
+        def _on_popup(_widget, menu):
+            visible = widget.get_visibility()
+            toggle_visibility = Gtk.MenuItem.new_with_label(_('Hide Password') if visible else _('Show Password'))
+            toggle_visibility.set_visible(True)
+            toggle_visibility.connect("activate", _toggle_visibility)
+            menu.add(toggle_visibility)
+
+        widget.set_property("secondary-icon-name", "view-reveal-symbolic")
+        widget.set_property("secondary-icon-activatable", True)
+        widget.connect("icon-press", _on_press)
+        widget.connect("populate-popup", _on_popup)
 
     def show_message_details(self, title, message, details):
         dlg = Gtk.MessageDialog(self.main_window, Gtk.DialogFlags.MODAL, Gtk.MessageType.INFO, Gtk.ButtonsType.OK)
@@ -285,6 +309,7 @@ class BuilderWidget(GtkBuilderWidget):
 
 class TreeViewHelper(object):
     """Container for gPodder-specific TreeView attributes."""
+
     LAST_TOOLTIP = '_gpodder_last_tooltip'
     CAN_TOOLTIP = '_gpodder_can_tooltip'
     ROLE = '_gpodder_role'
@@ -301,12 +326,12 @@ class TreeViewHelper(object):
 
     @staticmethod
     def make_search_equal_func(gpodder_model):
-        def func(model, column, key, iter):
+        def func(model, column, key, iterator):
             if model is None:
                 return True
             key = key.lower()
             for column in gpodder_model.SEARCH_COLUMNS:
-                if key in model.get_value(iter, column).lower():
+                if key in model.get_value(iterator, column).lower():
                     return False
             return True
         return func
@@ -325,7 +350,8 @@ class TreeViewHelper(object):
 
     @staticmethod
     def make_popup_position_func(widget):
-        """
+        """Make a function suitable for Gtk.Menu.popup().
+
         :return: suitable function to pass to Gtk.Menu.popup()
         It's used for instance when the popup trigger is the Menu key:
         it will position the menu on top of the selected row even if the mouse is elsewhere
@@ -346,3 +372,74 @@ class TreeViewHelper(object):
 
             return (x, y, True)
         return position_func
+
+    @staticmethod
+    def get_popup_rectangle(treeview, event, column=0):
+        """Return a Gdk.Rectangle to pass to Gtk.Popover.set_pointing_to().
+
+        If event is given, return a zero-width and height rectangle with the
+        event coordinates. If event is None, get the area of the column in the
+        first selected treeview row.
+
+        Used for instance when the popup trigger is the Menu key: It will
+        position the popover on top of the column on the selected row, even if
+        the mouse is elsewhere
+        """
+        if event is not None:
+            area = Gdk.Rectangle()
+            area.x, area.y = treeview.convert_bin_window_to_widget_coords(event.x, event.y)
+            return area
+
+        # If there's a selection, place the popup menu on top of
+        # the first-selected row and given column (otherwise in the top left corner)
+        selection = treeview.get_selection()
+        model, paths = selection.get_selected_rows()
+        if paths:
+            path = paths[0]
+            area = treeview.get_cell_area(path, treeview.get_column(column))
+        else:
+            area = Gdk.Rectangle()  # x, y, width, height are all 0
+
+        area.x, area.y = treeview.convert_bin_window_to_widget_coords(area.x, area.y)
+
+        return area
+
+
+class ExtensionMenuHelper(object):
+    """A helper class to handle extension submenus."""
+
+    def __init__(self, gpodder, menu, action_prefix, gen_callback_func=None):
+        self.gPodder = gpodder
+        self.menu = menu
+        self.action_prefix = action_prefix
+        self.gen_callback_func = gen_callback_func
+        self.actions = []
+
+    def replace_entries(self, new_entries):
+        # remove previous menu entries
+        for a in self.actions:
+            self.gPodder.remove_action(a.get_property('name'))
+        self.actions = []
+        self.menu.remove_all()
+        # create new ones
+        new_entries = list(new_entries or [])
+        for i, (label, callback) in enumerate(new_entries):
+            action_id = self.action_prefix + str(i)
+            action = Gio.SimpleAction.new(action_id)
+            action.set_enabled(callback is not None)
+            if callback is not None:
+                if self.gen_callback_func is None:
+                    action.connect('activate', callback)
+                else:
+                    action.connect('activate', self.gen_callback_func(callback))
+            self.actions.append(action)
+            self.gPodder.add_action(action)
+            itm = Gio.MenuItem.new(label, 'win.' + action_id)
+            self.menu.append_item(itm)
+
+
+class Dummy:
+    """Class with arbitrary attributes (for imitating e.g. Gtk Events)."""
+
+    def __init__(self, **kwds):
+        self.__dict__.update(kwds)

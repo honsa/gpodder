@@ -29,7 +29,7 @@ import gpodder
 
 
 class Matcher(object):
-    """Match implementation for EQL
+    """Match implementation for EQL.
 
     This class implements the low-level matching of
     EQL statements against episode objects.
@@ -46,7 +46,7 @@ class Matcher(object):
                     return (needle in haystack)
                 if needle in self._episode.title:
                     return True
-                return (needle in self._episode.description)
+                return (needle in self._episode._text_description)
 
             # case-insensitive search in haystack, or both title and description if no haystack
             def s(needle, haystack=None):
@@ -55,7 +55,7 @@ class Matcher(object):
                     return (needle in haystack.casefold())
                 if needle in self._episode.title.casefold():
                     return True
-                return (needle in self._episode.description.casefold())
+                return (needle in self._episode._text_description.casefold())
 
             # case-sensitive regular expression search in haystack, or both title and description if no haystack
             def R(needle, haystack=None):
@@ -64,7 +64,7 @@ class Matcher(object):
                     return regexp.search(haystack)
                 if regexp.search(self._episode.title):
                     return True
-                return regexp.search(self._episode.description)
+                return regexp.search(self._episode._text_description)
 
             # case-insensitive regular expression search in haystack, or both title and description if no haystack
             def r(needle, haystack=None):
@@ -73,10 +73,10 @@ class Matcher(object):
                     return regexp.search(haystack)
                 if regexp.search(self._episode.title):
                     return True
-                return regexp.search(self._episode.description)
+                return regexp.search(self._episode._text_description)
 
             return bool(eval(term, {'__builtins__': None, 'S': S, 's': s, 'R': R, 'r': r}, self))
-        except Exception as e:
+        except Exception:
             return False
 
     def __getitem__(self, k):
@@ -101,6 +101,11 @@ class Matcher(object):
             return episode.file_type() == k
         elif k == 'torrent':
             return episode.url.endswith('.torrent') or 'torrent' in episode.mime_type
+        elif k == 'paused':
+            return (episode.download_task is not None
+                and episode.download_task.status in (episode.download_task.PAUSED, episode.download_task.PAUSING))
+        elif k == 'failed':
+            return (episode.download_task is not None and episode.download_task.status == episode.download_task.FAILED)
 
         # Nouns (for comparisons)
         if k in ('megabytes', 'mb'):
@@ -108,9 +113,12 @@ class Matcher(object):
         elif k == 'title':
             return episode.title
         elif k == 'description':
-            return episode.description
+            return episode._text_description
         elif k == 'since':
-            return (datetime.datetime.now() - datetime.datetime.fromtimestamp(episode.published)).days
+            try:
+                return (datetime.datetime.now() - datetime.datetime.fromtimestamp(episode.published)).days
+            except (OSError, TypeError, ValueError):
+                return (datetime.datetime.now() - datetime.datetime.fromtimestamp(0)).days
         elif k == 'age':
             return episode.age_in_days()
         elif k in ('minutes', 'min'):
@@ -121,12 +129,18 @@ class Matcher(object):
             return episode.channel.title
         elif k == 'section':
             return episode.channel.section
+        elif k == 'url':
+            return episode.url
+        elif k == 'link':
+            return episode.link
+        elif k == 'filename':
+            return episode.download_filename
 
         raise KeyError(k)
 
 
 class EQL(object):
-    """A Query in EQL
+    """A Query in EQL.
 
     Objects of this class represent a query on episodes
     using EQL. Example usage:
@@ -205,7 +219,7 @@ class EQL(object):
         if not self._regex and not self._string:
             try:
                 self._query = compile(query, '<eql-string>', 'eval')
-            except Exception as e:
+            except Exception:
                 self._query = None
 
     def match(self, episode):
@@ -215,7 +229,7 @@ class EQL(object):
         if self._regex:
             return re.search(self._query, episode.title, self._flags) is not None
         elif self._string:
-            return self._query in episode.title.lower() or self._query in episode.description.lower()
+            return self._query in episode.title.lower() or self._query in episode._text_description.lower()
 
         return Matcher(episode).match(self._query)
 
@@ -224,13 +238,12 @@ class EQL(object):
 
 
 def UserEQL(query):
-    """EQL wrapper for user input
+    """EQL wrapper for user input.
 
     Automatically adds missing quotes around a
     non-EQL string for user-based input. In this
     case, EQL queries need to be enclosed in ().
     """
-
     if query is None:
         return None
 

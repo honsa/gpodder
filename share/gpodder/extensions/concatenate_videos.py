@@ -5,7 +5,6 @@
 
 import logging
 import os
-import subprocess
 
 from gi.repository import Gtk
 
@@ -75,7 +74,9 @@ class gPodderExtension:
                                 close_fds=True)
             result = ffmpeg.wait()
             util.delete_file(list_filename)
-            util.idle_add(lambda: indicator.on_finished())
+
+            indicator.on_finished()
+
             util.idle_add(lambda: self.gpodder.show_message(
                 _('Videos successfully converted') if result == 0 else
                 _('Error converting videos'),

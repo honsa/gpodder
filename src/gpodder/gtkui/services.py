@@ -25,7 +25,7 @@
 
 import logging
 
-from gi.repository import GdkPixbuf, Gtk
+from gi.repository import GdkPixbuf
 
 import gpodder
 from gpodder import coverart, util
@@ -37,10 +37,9 @@ logger = logging.getLogger(__name__)
 
 
 class CoverDownloader(ObservableService):
-    """
-    This class manages downloading cover art and notification
-    of other parts of the system. Downloading cover art can
-    happen either synchronously via get_cover() or in
+    """Manages downloading cover art and notification of other parts of the system.
+
+    Downloading cover art can happen either synchronously via get_cover() or in
     asynchronous mode via request_cover(). When in async mode,
     the cover downloader will send the cover via the
     'cover-available' message (via the ObservableService).
@@ -52,9 +51,7 @@ class CoverDownloader(ObservableService):
         ObservableService.__init__(self, signal_names)
 
     def request_cover(self, channel, custom_url=None, avoid_downloading=False):
-        """
-        Sends an asynchronous request to download a
-        cover for the specific channel.
+        """Send an asynchronous request to download a cover for the specific channel.
 
         After the cover has been downloaded, the
         "cover-available" signal will be sent with
@@ -74,9 +71,7 @@ class CoverDownloader(ObservableService):
             custom_url, True, avoid_downloading))
 
     def get_cover(self, channel, custom_url=None, avoid_downloading=False):
-        """
-        Sends a synchronous request to download a
-        cover for the specified channel.
+        """Send a synchronous request to download a cover for the specified channel.
 
         The cover will be returned to the caller.
 
@@ -92,11 +87,7 @@ class CoverDownloader(ObservableService):
         return pixbuf
 
     def replace_cover(self, channel, custom_url=None):
-        """
-        This is a convenience function that deletes
-        the current cover file and requests a new
-        cover from the URL specified.
-        """
+        """Delete the current cover file and request a new cover from the URL."""
         self.request_cover(channel, custom_url)
 
     def __get_cover(self, channel, url, async_mode=False, avoid_downloading=False):
@@ -117,16 +108,16 @@ class CoverDownloader(ObservableService):
 
         try:
             pixbuf = GdkPixbuf.Pixbuf.new_from_file(filename)
-        except Exception as e:
-            logger.warn('Cannot load cover art', exc_info=True)
+        except Exception:
+            logger.warning('Cannot load cover art', exc_info=True)
         if pixbuf is None and filename.startswith(channel.cover_file):
             logger.info('Deleting broken cover: %s', filename)
             util.delete_file(filename)
             filename = get_filename()
             try:
                 pixbuf = GdkPixbuf.Pixbuf.new_from_file(filename)
-            except Exception as e:
-                logger.warn('Corrupt cover art on server, deleting', exc_info=True)
+            except Exception:
+                logger.warning('Corrupt cover art on server, deleting', exc_info=True)
                 util.delete_file(filename)
 
         if async_mode:

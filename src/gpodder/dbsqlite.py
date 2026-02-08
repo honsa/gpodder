@@ -25,8 +25,6 @@
 #
 
 import logging
-import re
-import sys
 import threading
 from sqlite3 import dbapi2 as sqlite
 
@@ -59,9 +57,9 @@ class Database(object):
         self._db = None
 
     def purge(self, max_episodes, podcast_id):
-        """
-        Deletes old episodes.  Should be called
-        before adding new episodes to a podcast.
+        """Delete old episodes.
+
+        Should be called before adding new episodes to a podcast.
         """
         if max_episodes == 0:
             return
@@ -106,17 +104,17 @@ class Database(object):
             except Exception as e:
                 logger.error('Cannot commit: %s', e, exc_info=True)
 
-    def get_content_types(self, id):
-        """Given a podcast ID, returns the content types"""
+    def get_content_types(self, pid):
+        """Given a podcast ID, returns the content types."""
         with self.lock:
             cur = self.cursor()
-            cur.execute('SELECT mime_type FROM %s WHERE podcast_id = ?' % self.TABLE_EPISODE, (id,))
+            cur.execute('SELECT mime_type FROM %s WHERE podcast_id = ?' % self.TABLE_EPISODE, (pid,))
             for (mime_type,) in cur:
                 yield mime_type
             cur.close()
 
     def get_podcast_statistics(self, podcast_id=None):
-        """Given a podcast ID, returns the statistics for it
+        """Given a podcast ID, returns the statistics for it.
 
         If the podcast_id is omitted (using the default value), the
         statistics will be calculated over all podcasts.
@@ -152,7 +150,8 @@ class Database(object):
     def load_podcasts(self, factory):
         logger.info('Loading podcasts')
 
-        sql = 'SELECT * FROM %s' % self.TABLE_PODCAST
+        # See https://github.com/gpodder/gpodder/issues/1768 for why descending order
+        sql = 'SELECT * FROM %s order by id desc' % self.TABLE_PODCAST
 
         with self.lock:
             cur = self.cursor()
@@ -224,9 +223,7 @@ class Database(object):
             cur.close()
 
     def get(self, sql, params=None):
-        """
-        Returns the first cell of a query result, useful for COUNT()s.
-        """
+        """Return the first cell of a query result, useful for COUNT()s."""
         with self.lock:
             cur = self.cursor()
 
@@ -244,8 +241,8 @@ class Database(object):
             return row[0]
 
     def podcast_download_folder_exists(self, foldername):
-        """
-        Returns True if a foldername for a channel exists.
+        """Return True if a foldername for a channel exists.
+
         False otherwise.
         """
         foldername = util.convert_bytes(foldername)
@@ -254,8 +251,8 @@ class Database(object):
                 self.TABLE_PODCAST, (foldername,)) is not None
 
     def episode_filename_exists(self, podcast_id, filename):
-        """
-        Returns True if a filename for an episode exists.
+        """Return True if a filename for an episode exists.
+
         False otherwise.
         """
         filename = util.convert_bytes(filename)
@@ -264,16 +261,13 @@ class Database(object):
                 self.TABLE_EPISODE, (podcast_id, filename,)) is not None
 
     def get_last_published(self, podcast):
-        """
-        Look up the most recent publish date of a podcast.
-        """
+        """Look up the most recent publish date of a podcast."""
         return self.get('SELECT MAX(published) FROM %s WHERE podcast_id = ?' % self.TABLE_EPISODE, (podcast.id,))
 
     def delete_episode_by_guid(self, guid, podcast_id):
-        """
-        Deletes episodes that have a specific GUID for
-        a given channel. Used after feed updates for
-        episodes that have disappeared from the feed.
+        """Delete the episode which has a specific GUID for a given channel.
+
+        Used after feed updates for episodes that have disappeared from the feed.
         """
         guid = util.convert_bytes(guid)
 

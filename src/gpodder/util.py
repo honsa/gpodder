@@ -23,7 +23,7 @@
 #  Thomas Perl <thp@perli.net> 2007-08-04
 #
 
-"""Miscellaneous helper functions for gPodder
+"""Miscellaneous helper functions for gPodder.
 
 This module provides helper and utility functions for gPodder that
 are not tied to any specific part of gPodder.
@@ -33,17 +33,15 @@ import collections
 import datetime
 import email
 import glob
-import gzip
 import http.client
-import io
 import itertools
-import json
 import locale
 import logging
 import mimetypes
 import os
 import os.path
 import platform
+import random
 import re
 import shlex
 import shutil
@@ -57,7 +55,6 @@ import time
 import urllib.error
 import urllib.parse
 import webbrowser
-import xml.dom.minidom
 from html.entities import entitydefs, name2codepoint
 from html.parser import HTMLParser
 
@@ -73,14 +70,14 @@ logger = logging.getLogger(__name__)
 try:
     import html5lib
 except ImportError:
-    logger.warn('html5lib not found, falling back to HTMLParser')
+    logger.warning("html5lib was not found, fall-back to HTMLParser")
     html5lib = None
 
 if gpodder.ui.win32:
     try:
         import gpodder.utilwin32ctypes as win32file
     except ImportError:
-        logger.warn('Running on Win32 but utilwin32ctypes can\'t be loaded.')
+        logger.warning('Running on Win32: utilwin32ctypes cannot be loaded')
         win32file = None
 
 _ = gpodder.gettext
@@ -90,7 +87,7 @@ N_ = gpodder.ngettext
 try:
     locale.setlocale(locale.LC_ALL, '')
 except Exception as e:
-    logger.warn('Cannot set locale (%s)', e, exc_info=True)
+    logger.warning('Cannot set locale (%s)', e, exc_info=True)
 
 # Native filesystem encoding detection
 encoding = sys.getfilesystemencoding()
@@ -151,14 +148,12 @@ _MIME_TYPE_LIST = [
     ('.webm', 'audio/webm'),
 ]
 
-_MIME_TYPES = dict((k, v) for v, k in _MIME_TYPE_LIST)
+_MIME_TYPES = {k: v for v, k in _MIME_TYPE_LIST}
 _MIME_TYPES_EXT = dict(_MIME_TYPE_LIST)
 
 
 def is_absolute_url(url):
-    """
-    Check if url is an absolute url (i.e. has a scheme)
-    """
+    """Check if url is an absolute url (i.e. has a scheme)."""
     try:
         parsed = urllib.parse.urlparse(url)
         # fix #1190: when parsing a windows path, scheme=drive_letter, path=\rest_of_path
@@ -168,9 +163,7 @@ def is_absolute_url(url):
 
 
 def new_gio_file(path):
-    """
-    Create a new Gio.File given a path or uri
-    """
+    """Create a new Gio.File given a path or uri."""
     from gi.repository import Gio
 
     if is_absolute_url(path):
@@ -180,8 +173,8 @@ def new_gio_file(path):
 
 
 def make_directory(path):
-    """
-    Tries to create a directory if it does not exist already.
+    """Create a directory if it does not exist already.
+
     Returns True if the directory exists after the function
     call, False otherwise.
     """
@@ -198,17 +191,16 @@ def make_directory(path):
     except GLib.Error as err:
         # The sync might be multithreaded, so directories can be created by other threads
         if not err.matches(Gio.io_error_quark(), Gio.IOErrorEnum.EXISTS):
-            logger.warn('Could not create directory %s: %s', path.get_uri(), err.message)
+            logger.warning('Could not create directory %s: %s', path.get_uri(), err.message)
             return False
 
     return True
 
 
 def normalize_feed_url(url):
-    """
-    Converts any URL to http:// or ftp:// so that it can be
-    used with "wget". If the URL cannot be converted (invalid
-    or unknown scheme), "None" is returned.
+    """Convert any URL to http:// or ftp:// so that it can be used with "wget".
+
+    If the URL cannot be converted (invalid or unknown scheme), "None" is returned.
 
     This will also normalize feed:// and itpc:// to http://.
 
@@ -246,6 +238,12 @@ def normalize_feed_url(url):
     'http://UserName:PassWord@example.com/'
     """
     if not url or len(url) < 8:
+        return None
+
+    # Removes leading and/or trailing whitespaces - if url contains whitespaces
+    # in between after str.strip() -> conclude invalid url & return None
+    url = url.strip()
+    if ' ' in url:
         return None
 
     # This is a list of prefixes that you can use to minimize the amount of
@@ -292,15 +290,14 @@ def normalize_feed_url(url):
     if scheme not in ('http', 'https', 'ftp', 'file'):
         return None
 
-    # urlunsplit might return "a slighty different, but equivalent URL"
+    # urlunsplit might return "a slightly different, but equivalent URL"
     return urllib.parse.urlunsplit((scheme, netloc, path, query, fragment))
 
 
 def username_password_from_url(url):
-    r"""
-    Returns a tuple (username,password) containing authentication
-    data from the specified URL or (None,None) if no authentication
-    data can be found in the URL.
+    r"""Return (username,password) tuple from the specified URL.
+
+    Returns (None,None) if no authentication data can be found in the URL.
 
     See Section 3.1 of RFC 1738 (http://www.ietf.org/rfc/rfc1738.txt)
 
@@ -367,19 +364,15 @@ def username_password_from_url(url):
 
 
 def directory_is_writable(path):
-    """
-    Returns True if the specified directory exists and is writable
-    by the current user.
-    """
+    """Return True if the path exists and is writable by the current user."""
     return os.path.isdir(path) and os.access(path, os.W_OK)
 
 
 def calculate_size(path):
-    """
-    Tries to calculate the size of a directory, including any
-    subdirectories found. The returned value might not be
-    correct if the user doesn't have appropriate permissions
-    to list all subdirectories of the given path.
+    """Calculate the size of a directory, including any subdirectories found.
+
+    The returned value might not be correct if the user doesn't have appropriate
+    permissions to list all subdirectories of the given path.
     """
     if path is None:
         return 0
@@ -391,26 +384,26 @@ def calculate_size(path):
         return os.path.getsize(path)
 
     if os.path.isdir(path) and not os.path.islink(path):
-        sum = os.path.getsize(path)
+        size = os.path.getsize(path)
 
         try:
             for item in os.listdir(path):
                 try:
-                    sum += calculate_size(os.path.join(path, item))
+                    size += calculate_size(os.path.join(path, item))
                 except:
-                    logger.warn('Cannot get size for %s', path, exc_info=True)
+                    logger.warning('Cannot get size for %s', path, exc_info=True)
         except:
-            logger.warn('Cannot access %s', path, exc_info=True)
+            logger.warning('Cannot access %s', path, exc_info=True)
 
-        return sum
+        return size
 
     return 0
 
 
 def file_modification_datetime(filename):
-    """
-    Returns the modification date of the specified file
-    as a datetime.datetime object or None if the modification
+    """Return the modification date of the specified file.
+
+    Return value is a datetime.datetime object or None if the modification
     date cannot be determined.
     """
     if filename is None:
@@ -424,14 +417,14 @@ def file_modification_datetime(filename):
         timestamp = s[stat.ST_MTIME]
         return datetime.datetime.fromtimestamp(timestamp)
     except:
-        logger.warn('Cannot get mtime for %s', filename, exc_info=True)
+        logger.warning('Cannot get mtime for %s', filename, exc_info=True)
         return None
 
 
 def file_age_in_days(filename):
-    """
-    Returns the age of the specified filename in days or
-    zero if the modification date cannot be determined.
+    """Return the age of the specified filename in days.
+
+    Returns zero if the modification date cannot be determined.
     """
     dt = file_modification_datetime(filename)
     if dt is None:
@@ -441,9 +434,9 @@ def file_age_in_days(filename):
 
 
 def file_modification_timestamp(filename):
-    """
-    Returns the modification date of the specified file as a number
-    or -1 if the modification date cannot be determined.
+    """Return the modification date of the specified file as a number.
+
+    Return -1 if the modification date cannot be determined.
     """
     if filename is None:
         return -1
@@ -451,14 +444,14 @@ def file_modification_timestamp(filename):
         s = os.stat(filename)
         return s[stat.ST_MTIME]
     except:
-        logger.warn('Cannot get modification timestamp for %s', filename)
+        logger.warning('Cannot get modification timestamp for %s', filename)
         return -1
 
 
 def file_age_to_string(days):
-    """
-    Converts a "number of days" value to a string that
-    can be used in the UI to display the file age.
+    """Convert a "number of days" value to a string.
+
+    The return value can be used in the UI to display the file age.
 
     >>> file_age_to_string(0)
     ''
@@ -474,9 +467,7 @@ def file_age_to_string(days):
 
 
 def is_system_file(filename):
-    """
-    Checks to see if the given file is a system file.
-    """
+    """Check if the given file is a system file."""
     if gpodder.ui.win32 and win32file is not None:
         result = win32file.GetFileAttributes(filename)
         # -1 / 0xffffffff is returned by GetFileAttributes when an error occurs
@@ -487,10 +478,9 @@ def is_system_file(filename):
 
 
 def get_free_disk_space_win32(path):
-    """
-    Win32-specific code to determine the free disk space remaining
-    for a given path. Uses code from:
+    """Return the free disk space remaining for a given path on Win32.
 
+    Uses code from:
     http://mail.python.org/pipermail/python-list/2003-May/203223.html
     """
     if win32file is None:
@@ -503,14 +493,11 @@ def get_free_disk_space_win32(path):
 
 
 def get_free_disk_space(path):
-    """
-    Calculates the free disk space available to the current user
-    on the file system that contains the given path.
+    """Return the free disk space remaining for a given path.
 
     If the path (or its parent folder) does not yet exist, this
     function returns zero.
     """
-
     if not os.path.exists(path):
         return -1
 
@@ -522,73 +509,82 @@ def get_free_disk_space(path):
     return s.f_bavail * s.f_bsize
 
 
-def format_date(timestamp):
-    """
-    Converts a UNIX timestamp to a date representation. This
-    function returns "Today", "Yesterday", a weekday name or
+def format_date(timestamp, today=None):
+    """Convert a UNIX timestamp to a date representation.
+
+    This function returns "Today", "Yesterday", a weekday name or
     the date in %x format, which (according to the Python docs)
     is the "Locale's appropriate date representation".
 
     Returns None if there has been an error converting the
     timestamp to a string representation.
+
+    For instance on windows we can't represent dates before epoch (timestamp<0)
+
+    The 'today' keyword argument is used for testing purposes only.
+
+    >>> (os.name == 'nt') == (format_date(-39539) == None)
+    True
+    >>> format_date(time.time())
+    'Today'
+    >>> format_date(time.time() - 24*60*60)
+    'Yesterday'
+    >>> format_date(1742388710.0, today=datetime.date(2025, 3, 21))
+    'Wednesday'
+    >>> if os.name == 'posix':
+    ...    old_tz = os.environ.get('TZ')
+    ...    os.environ['TZ'] = 'Europe/Paris'
+    ...    time.tzset()
+    >>> format_date(1704099600)
+    '01/01/24'
+    >>> if os.name == 'posix':
+    ...    if old_tz:
+    ...        os.environ['TZ'] = old_tz
+    ...    else:
+    ...        del os.environ['TZ']
+    ...    time.tzset()
     """
     if timestamp is None:
         return None
 
-    seconds_in_a_day = 60 * 60 * 24
-
-    today = time.localtime()[:3]
-    yesterday = time.localtime(time.time() - seconds_in_a_day)[:3]
     try:
-        timestamp_date = time.localtime(timestamp)[:3]
-    except ValueError as ve:
-        logger.warn('Cannot convert timestamp', exc_info=True)
+        timestamp_date = datetime.date.fromtimestamp(timestamp)
+    except (OSError, TypeError, ValueError):
+        logger.warning('Cannot convert timestamp %r' % timestamp, exc_info=True)
         return None
-    except TypeError as te:
-        logger.warn('Cannot convert timestamp', exc_info=True)
-        return None
+
+    if today is None:
+        today = datetime.date.today()
+
+    delta = today - timestamp_date
 
     if timestamp_date == today:
         return _('Today')
-    elif timestamp_date == yesterday:
+    if delta <= datetime.timedelta(days=1):
         return _('Yesterday')
-
-    try:
-        diff = int((time.time() - timestamp) / seconds_in_a_day)
-    except:
-        logger.warn('Cannot convert "%s" to date.', timestamp, exc_info=True)
-        return None
-
-    try:
-        timestamp = datetime.datetime.fromtimestamp(timestamp)
-    except:
-        return None
-
-    if diff < 7:
+    if delta <= datetime.timedelta(days=7):
         # Weekday name
-        return timestamp.strftime('%A')
-    else:
-        # Locale's appropriate date representation
-        return timestamp.strftime('%x')
+        return timestamp_date.strftime('%A')
+    # Locale's appropriate date representation
+    return timestamp_date.strftime('%x')
 
 
 def format_filesize(bytesize, use_si_units=False, digits=2):
-    """
-    Formats the given size in bytes to be human-readable,
+    """Format the given size in bytes to be human-readable.
 
     Returns a localized "(unknown)" string when the bytesize
     has a negative value.
     """
     si_units = (
-            ('kB', 10**3),
-            ('MB', 10**6),
-            ('GB', 10**9),
+            (_('kB'), 10**3),
+            (_('MB'), 10**6),
+            (_('GB'), 10**9),
     )
 
     binary_units = (
-            ('KiB', 2**10),
-            ('MiB', 2**20),
-            ('GiB', 2**30),
+            (_('KiB'), 2**10),
+            (_('MiB'), 2**20),
+            (_('GiB'), 2**30),
     )
 
     try:
@@ -604,7 +600,7 @@ def format_filesize(bytesize, use_si_units=False, digits=2):
     else:
         units = binary_units
 
-    (used_unit, used_value) = ('B', bytesize)
+    (used_unit, used_value) = (_('B'), bytesize)
 
     for (unit, value) in units:
         if bytesize >= value:
@@ -615,7 +611,7 @@ def format_filesize(bytesize, use_si_units=False, digits=2):
 
 
 def delete_file(filename):
-    """Delete a file from the filesystem
+    """Delete a file from the filesystem.
 
     Errors (permissions errors or file not found)
     are silently ignored.
@@ -627,7 +623,7 @@ def delete_file(filename):
 
 
 def is_html(text):
-    """Heuristically tell if text is HTML
+    """Heuristically tell if text is HTML.
 
     By looking for an open tag (more or less:)
     >>> is_html('<h1>HELLO</h1>')
@@ -640,10 +636,9 @@ def is_html(text):
 
 
 def remove_html_tags(html):
-    """
-    Remove HTML tags from a string and replace numeric and
-    named entities with the corresponding character, so the
-    HTML text can be displayed in a simple text view.
+    """Remove HTML tags and replace numeric and named entities with characters.
+
+    Converts HTML text so that it can be displayed in a simple text view.
     """
     if html is None:
         return None
@@ -677,7 +672,7 @@ def remove_html_tags(html):
     return result.strip()
 
 
-class HyperlinkExtracter(object):
+class HyperlinkExtractor(object):
     def __init__(self):
         self.parts = []
         self.target_stack = [None]
@@ -771,9 +766,9 @@ class HyperlinkExtracter(object):
 
 class ExtractHyperlinkedText(object):
     def __call__(self, document):
-        self.extracter = HyperlinkExtracter()
+        self.extractor = HyperlinkExtractor()
         self.visit(document)
-        return self.extracter.get_result()
+        return self.extractor.get_result()
 
     def visit(self, element):
         # skip functions generated by html5lib for comments in the HTML
@@ -782,47 +777,46 @@ class ExtractHyperlinkedText(object):
 
         NS = '{http://www.w3.org/1999/xhtml}'
         tag_name = (element.tag[len(NS):] if element.tag.startswith(NS) else element.tag).lower()
-        self.extracter.handle_starttag(tag_name, list(element.items()))
+        self.extractor.handle_starttag(tag_name, list(element.items()))
 
         if element.text is not None:
-            self.extracter.handle_data(element.text)
+            self.extractor.handle_data(element.text)
 
         for child in element:
             self.visit(child)
 
             if child.tail is not None:
-                self.extracter.handle_data(child.tail)
+                self.extractor.handle_data(child.tail)
 
-        self.extracter.handle_endtag(tag_name)
+        self.extractor.handle_endtag(tag_name)
 
 
 class ExtractHyperlinkedTextHTMLParser(HTMLParser):
     def __call__(self, html):
-        self.extracter = HyperlinkExtracter()
+        self.extractor = HyperlinkExtractor()
         self.target_stack = [None]
         self.feed(html)
         self.close()
-        return self.extracter.get_result()
+        return self.extractor.get_result()
 
     def handle_starttag(self, tag, attrs):
-        self.extracter.handle_starttag(tag, attrs)
+        self.extractor.handle_starttag(tag, attrs)
 
     def handle_endtag(self, tag):
-        self.extracter.handle_endtag(tag)
+        self.extractor.handle_endtag(tag)
 
     def handle_data(self, data):
-        self.extracter.handle_data(data)
+        self.extractor.handle_data(data)
 
     def handle_entityref(self, name):
-        self.extracter.handle_entityref(name)
+        self.extractor.handle_entityref(name)
 
     def handle_charref(self, name):
-        self.extracter.handle_charref(name)
+        self.extractor.handle_charref(name)
 
 
 def extract_hyperlinked_text(html):
-    """
-    Convert HTML to hyperlinked text.
+    """Convert HTML to hyperlinked text.
 
     The output is a list of (target, text) tuples, where target is either a URL
     or None, and text is a piece of plain text for rendering in a TextView.
@@ -839,12 +833,11 @@ def extract_hyperlinked_text(html):
 
 
 def nice_html_description(img, description):
+    """Create HTML from a text description.
+
+    Basic html formatting + hyperlink highlighting + video thumbnail.
     """
-    basic html formating + hyperlink highlighting + video thumbnail
-    """
-    description = re.sub(r'''https?://[^\s]+''',
-                         r'''<a href="\g<0>">\g<0></a>''',
-                         description)
+    description = re.sub(r'https?://[^\s]+', r'<a href="\g<0>">\g<0></a>', description)
     description = description.replace('\n', '<br>')
     html = """<style type="text/css">
     body > img { float: left; max-width: 30vw; margin: 0 1em 1em 0; }
@@ -857,9 +850,7 @@ def nice_html_description(img, description):
 
 
 def wrong_extension(extension):
-    """
-    Determine if a given extension looks like it's
-    wrong (e.g. empty, extremely long or spaces)
+    """Determine if a file extension seems wrong (empty, extremely long or spaces).
 
     Returns True if the extension most likely is a
     wrong one and should be replaced.
@@ -903,8 +894,7 @@ def wrong_extension(extension):
 
 
 def extension_from_mimetype(mimetype):
-    """
-    Simply guesses what the file extension should be from the mimetype
+    """Simply guesses what the file extension should be from the mimetype.
 
     >>> extension_from_mimetype('audio/mp4')
     '.m4a'
@@ -924,7 +914,7 @@ def extension_from_mimetype(mimetype):
 
 def mimetype_from_extension(extension):
     """
-    Simply guesses what the mimetype should be from the file extension
+    Simply guesses what the mimetype should be from the file extension.
 
     >>> mimetype_from_extension('.m4a')
     'audio/mp4'
@@ -941,16 +931,16 @@ def mimetype_from_extension(extension):
         return _MIME_TYPES_EXT[extension]
 
     # Need to prepend something to the extension, so guess_type works
-    type, encoding = mimetypes.guess_type('file' + extension)
+    mimetype, encoding = mimetypes.guess_type('file' + extension)
 
-    return type or ''
+    return mimetype or ''
 
 
 def extension_correct_for_mimetype(extension, mimetype):
     """
-    Check if the given filename extension (e.g. ".ogg") is a possible
-    extension for a given mimetype (e.g. "application/ogg") and return
-    a boolean value (True if it's possible, False if not). Also do
+    Check if the filename extension is a possible extension for a mimetype.
+
+    Returns a boolean value (True if it's possible, False if not). Also do
 
     >>> extension_correct_for_mimetype('.ogg', 'application/ogg')
     True
@@ -985,9 +975,9 @@ def extension_correct_for_mimetype(extension, mimetype):
 
 
 def filename_from_url(url):
-    """
-    Extracts the filename and (lowercase) extension (with dot)
-    from a URL, e.g. http://server.com/file.MP3?download=yes
+    """Extract the filename and (lowercase) extension (with dot) from an URL.
+
+    E.g. http://server.com/file.MP3?download=yes
     will result in the string ("file", ".mp3") being returned.
 
     This function will also try to best-guess the "real"
@@ -1000,7 +990,7 @@ def filename_from_url(url):
     http://server/get.jsp?file=/episode0815.MOV => ("episode0815", ".mov")
     http://s/redirect.mp4?http://serv2/test.mp4 => ("test", ".mp4")
     """
-    (scheme, netloc, path, para, query, fragid) = urllib.parse.urlparse(url)
+    (scheme, netloc, path, params, query, fragment) = urllib.parse.urlparse(url)
     (filename, extension) = os.path.splitext(
         os.path.basename(urllib.parse.unquote(path)))
 
@@ -1023,10 +1013,9 @@ def filename_from_url(url):
 
 
 def file_type_by_extension(extension):
-    """
-    Tries to guess the file type by looking up the filename
-    extension from a table of known file types. Will return
-    "audio", "video" or None.
+    """Guess the file type from the filename extension.
+
+    Uses a table of known file types. Will return "audio", "video" or None.
 
     >>> file_type_by_extension('.aif')
     'audio'
@@ -1055,10 +1044,10 @@ def file_type_by_extension(extension):
         return _MIME_TYPES_EXT[extension].split('/')[0]
 
     # Need to prepend something to the extension, so guess_type works
-    type, encoding = mimetypes.guess_type('file' + extension)
+    mimetype, encoding = mimetypes.guess_type('file' + extension)
 
-    if type is not None and '/' in type:
-        filetype, rest = type.split('/', 1)
+    if mimetype is not None and '/' in mimetype:
+        filetype, rest = mimetype.split('/', 1)
         if filetype in ('audio', 'video', 'image'):
             return filetype
 
@@ -1066,9 +1055,9 @@ def file_type_by_extension(extension):
 
 
 def get_first_line(s):
-    """
-    Returns only the first line of a string, stripped so
-    that it doesn't have whitespace before or after.
+    """Return the first line of a string.
+
+    The line is stripped so that it doesn't have whitespace before or after.
     """
     if s:
         return s.strip().split('\n')[0].strip()
@@ -1076,7 +1065,8 @@ def get_first_line(s):
 
 
 def object_string_formatter(s, **kwargs):
-    """
+    """Format a string with object attributes.
+
     Makes attributes of object passed in as keyword
     arguments available as {OBJECTNAME.ATTRNAME} in
     the passed-in string and returns a string with
@@ -1105,15 +1095,15 @@ def object_string_formatter(s, **kwargs):
                     to_s = str(getattr(o, attr))
                     result = result.replace(from_s, to_s)
                 except:
-                    logger.warn('Replace of "%s" failed for "%s".', attr, s)
+                    logger.warning('Replace of "%s" failed for "%s".', attr, s)
 
     return result
 
 
 def format_desktop_command(command, filenames, start_position=None):
-    """
-    Formats a command template from the "Exec=" line of a .desktop
-    file to a string that can be invoked in a shell.
+    """Format a command template from the "Exec=" line of a .desktop file.
+
+    The returned string can be invoked in a shell.
 
     Handled format strings: %U, %u, %F, %f and a fallback that
     appends the filename as first parameter of the command.
@@ -1157,9 +1147,9 @@ def format_desktop_command(command, filenames, start_position=None):
 
 
 def url_strip_authentication(url):
-    """
-    Strips authentication data from an URL. Returns the URL with
-    the authentication data removed from it.
+    """Strip authentication data from an URL.
+
+    Returns the URL with the authentication data removed from it.
 
     >>> url_strip_authentication('https://host.com/')
     'https://host.com/'
@@ -1191,9 +1181,9 @@ def url_strip_authentication(url):
 
 
 def url_add_authentication(url, username, password):
-    """
-    Adds authentication data (username, password) to a given
-    URL in order to construct an authenticated URL.
+    """Add authentication data (username, password) to a given URL.
+
+    The returned string is an authenticated URL.
 
     >>> url_add_authentication('https://host.com/', '', None)
     'https://host.com/'
@@ -1240,9 +1230,8 @@ def url_add_authentication(url, username, password):
 
 
 def urlopen(url, headers=None, data=None, timeout=None, **kwargs):
-    """
-    An URL opener with the User-agent set to gPodder (with version)
-    """
+    """Open an URL with the User-agent set to gPodder (with version)."""
+    from gpodder import config
     if headers is None:
         headers = {}
     else:
@@ -1259,13 +1248,13 @@ def urlopen(url, headers=None, data=None, timeout=None, **kwargs):
     s.mount('http://', a)
     s.mount('https://', a)
     headers.update({'User-agent': gpodder.user_agent})
-    return s.get(url, headers=headers, data=data, timeout=timeout, **kwargs)
+    proxies = config._proxies
+    logger.debug(f"urlopen: url: {url}, proxies: {proxies}")
+    return s.get(url, headers=headers, data=data, proxies=proxies, timeout=timeout, **kwargs)
 
 
 def get_real_url(url):
-    """
-    Gets the real URL of a file and resolves all redirects.
-    """
+    """Get the real URL of a file and resolves all redirects."""
     try:
         return urlopen(url).url
     except:
@@ -1274,16 +1263,15 @@ def get_real_url(url):
 
 
 def find_command(command):
-    """
-    Searches the system's PATH for a specific command that is
-    executable by the user. Returns the first occurence of an
+    """Search the PATH for a specific command that is executable by the user.
+
+    Returns the first occurrence of an
     executable binary in the PATH, or None if the command is
     not available.
 
     On Windows, this also looks for "<command>.bat" and
     "<command>.exe" files if "<command>" itself doesn't exist.
     """
-
     if 'PATH' not in os.environ:
         return None
 
@@ -1302,7 +1290,7 @@ def find_command(command):
 
 
 def idle_add(func, *args):
-    """Run a function in the main GUI thread
+    """Run a function in the main GUI thread.
 
     This is a wrapper function that does the Right Thing depending on if we are
     running on Gtk+, Qt or CLI.
@@ -1312,17 +1300,78 @@ def idle_add(func, *args):
     as possible from the main UI thread.
     """
     if gpodder.ui.gtk:
-        from gi.repository import GObject
-        GObject.idle_add(func, *args)
+        from gi.repository import GLib
+        GLib.idle_add(func, *args)
     else:
         func(*args)
 
 
+def idle_timeout_add(milliseconds, func, *args):
+    """Run a function in the main GUI thread at regular intervals, at idle priority.
+
+    PRIORITY_HIGH           -100
+    PRIORITY_DEFAULT        0        timeout_add()
+    PRIORITY_HIGH_IDLE      100
+    resizing                110
+    redraw                  120
+    PRIORITY_DEFAULT_IDLE   200      idle_add()
+    PRIORITY_LOW            300
+    """
+    if not gpodder.ui.gtk:
+        raise Exception('util.idle_timeout_add() is only supported by Gtk+')
+    from gi.repository import GLib
+    return GLib.timeout_add(milliseconds, func, *args, priority=GLib.PRIORITY_DEFAULT_IDLE)
+
+
+class IdleTimeout(object):
+    """Run a function in the main GUI thread at regular intervals since the last run, at idle priority.
+
+    A simple timeout_add() continuously calls the function if it exceeds the interval,
+    which lags the UI and prevents idle_add() calls from happening. This class restarts
+    the timer after the function finishes, allowing other callbacks to run.
+    """
+
+    def __init__(self, milliseconds, func, *args):
+        if not gpodder.ui.gtk:
+            raise Exception('util.IdleTimeout() is only supported by Gtk+')
+        self.milliseconds = milliseconds
+        self.max_milliseconds = 0
+        self.func = func
+        from gi.repository import GLib
+        self.id = GLib.timeout_add(milliseconds, self._callback, *args, priority=GLib.PRIORITY_DEFAULT_IDLE)
+
+    def set_max_milliseconds(self, max_milliseconds):
+        self.max_milliseconds = max_milliseconds
+        return self
+
+    def _callback(self, *args):
+        self.cancel()
+        start_time = time.time()
+        if self.func(*args):
+            if self.max_milliseconds > self.milliseconds:
+                duration = round((time.time() - start_time) * 1000)
+                if duration > self.max_milliseconds:
+                    duration = self.max_milliseconds
+                milliseconds = round(lerp(self.milliseconds, self.max_milliseconds, duration / self.max_milliseconds))
+            else:
+                milliseconds = self.milliseconds
+            from gi.repository import GLib
+            self.id = GLib.timeout_add(milliseconds, self._callback, *args, priority=GLib.PRIORITY_DEFAULT_IDLE)
+
+    def cancel(self):
+        if self.id:
+            from gi.repository import GLib
+            GLib.source_remove(self.id)
+            self.id = 0
+
+
+def lerp(a, b, f):
+    """Linear interpolation between 'a' and 'b', where 'f' is between 0.0 and 1.0."""
+    return ((1.0 - f) * a) + (f * b)
+
+
 def bluetooth_available():
-    """
-    Returns True or False depending on the availability
-    of bluetooth functionality on the system.
-    """
+    """Return True or False depending on the availability of bluetooth functionality on the system."""
     if find_command('bluetooth-sendto') or \
             find_command('gnome-obex-send'):
         return True
@@ -1331,8 +1380,7 @@ def bluetooth_available():
 
 
 def bluetooth_send_file(filename):
-    """
-    Sends a file via bluetooth.
+    """Send a file via bluetooth.
 
     This function tries to use "bluetooth-sendto", and if
     it is not available, it also tries "gnome-obex-send".
@@ -1352,8 +1400,8 @@ def bluetooth_send_file(filename):
         return False
 
 
-def format_time(value):
-    """Format a seconds value to a string
+def format_time(seconds):
+    """Format a seconds value to a string.
 
     >>> format_time(0)
     '00:00'
@@ -1363,16 +1411,26 @@ def format_time(value):
     '01:00:00'
     >>> format_time(10921)
     '03:02:01'
+    >>> format_time(86401)
+    '24:00:01'
     """
-    dt = datetime.datetime.utcfromtimestamp(value)
-    if dt.hour == 0:
-        return dt.strftime('%M:%S')
+    hours = 0
+    minutes = 0
+    if seconds >= 3600:
+        hours = seconds // 3600
+        seconds -= hours * 3600
+    if seconds >= 60:
+        minutes = seconds // 60
+        seconds -= minutes * 60
+
+    if hours == 0:
+        return '%02d:%02d' % (minutes, seconds)
     else:
-        return dt.strftime('%H:%M:%S')
+        return '%02d:%02d:%02d' % (hours, minutes, seconds)
 
 
 def parse_time(value):
-    """Parse a time string into seconds
+    """Parse a time string into seconds.
 
     >>> parse_time('00:00')
     0
@@ -1415,9 +1473,7 @@ def parse_time(value):
 
 
 def format_seconds_to_hour_min_sec(seconds):
-    """
-    Take the number of seconds and format it into a
-    human-readable string (duration).
+    """Format the number of seconds into a human-readable string (duration).
 
     >>> format_seconds_to_hour_min_sec(3834)
     '1 hour, 3 minutes and 54 seconds'
@@ -1426,7 +1482,6 @@ def format_seconds_to_hour_min_sec(seconds):
     >>> format_seconds_to_hour_min_sec(62)
     '1 minute and 2 seconds'
     """
-
     if seconds < 1:
         return N_('%(count)d second', '%(count)d seconds',
                   seconds) % {'count': seconds}
@@ -1460,7 +1515,7 @@ def format_seconds_to_hour_min_sec(seconds):
 
 
 def http_request(url, method='HEAD'):
-    (scheme, netloc, path, parms, qry, fragid) = urllib.parse.urlparse(url)
+    (scheme, netloc, path, params, query, fragment) = urllib.parse.urlparse(url)
     if scheme == 'https':
         conn = http.client.HTTPSConnection(netloc)
     else:
@@ -1471,12 +1526,12 @@ def http_request(url, method='HEAD'):
 
 
 def gui_open(filename, gui=None):
-    """
-    Open a file or folder with the default application set
-    by the Desktop environment. This uses "xdg-open" on all
-    systems with a few exceptions:
+    """Open a file or folder with the default application from the Desktop environment.
+
+    Uses "xdg-open" on all systems with a few exceptions:
 
        on Win32, os.startfile() is used
+       on OSX, "open" is used
     """
     try:
         if gpodder.ui.win32:
@@ -1493,6 +1548,7 @@ def gui_open(filename, gui=None):
                 raise Exception((_("System default program '%(opener)s' not found"))
                     % {'opener': opener}
                 )
+            logger.debug('Opening file/folder "%s" using "%s"', filename, opener_fullpath)
             Popen([opener_fullpath, filename], close_fds=True)
         return True
     except:
@@ -1509,18 +1565,17 @@ def gui_open(filename, gui=None):
 
 
 def open_website(url):
-    """
-    Opens the specified URL using the default system web
-    browser. This uses Python's "webbrowser" module, so
-    make sure your system is set up correctly.
+    """Open the specified URL using the default system web browser.
+
+    Uses Python's "webbrowser" module, so make sure your system is set up
+    correctly.
     """
     run_in_background(lambda: webbrowser.open(url))
+    return True
 
 
 def copy_text_to_clipboard(text):
-    """
-    Copies the specified text to both clipboards.
-    """
+    """Copy the specified text to both clipboards."""
     import gi
     gi.require_version('Gtk', '3.0')
     from gi.repository import Gdk, Gtk
@@ -1532,8 +1587,7 @@ def copy_text_to_clipboard(text):
 
 
 def convert_bytes(d):
-    """
-    Convert byte strings to unicode strings
+    """Convert byte strings to unicode strings.
 
     This function will decode byte strings into unicode
     strings. Any other data types will be left alone.
@@ -1562,9 +1616,9 @@ def convert_bytes(d):
 
 
 def sanitize_filename(filename, max_length):
-    """
-    Generate a sanitized version of a filename; trim filename
-    if greater than max_length (0 = no limit).
+    """Generate a sanitized version of a filename.
+
+    Trim the filename if it is longer than max_length (0 = no limit).
 
     >>> sanitize_filename('https://www.host.name/feed', 0)
     'https___www.host.name_feed'
@@ -1575,9 +1629,19 @@ def sanitize_filename(filename, max_length):
     >>> sanitize_filename('Cool feed (ogg)', 1)
     'C'
     """
-    if max_length > 0 and len(filename) > max_length:
+    if max_length > 0 and len(filename.encode('utf-8')) > max_length:
         logger.info('Limiting file/folder name "%s" to %d characters.', filename, max_length)
-        filename = filename[:max_length]
+        filename = filename.encode('utf-8')
+        length = len(filename)
+        while length > max_length:
+            # strip continuation bytes
+            while (filename[-1] & 0xC0) == 0x80:
+                filename = filename[:-1]
+                length -= 1
+            # strip leader byte
+            filename = filename[:-1]
+            length -= 1
+        filename = filename.decode('utf-8')
 
     # see #361 - at least slash must be removed
     filename = re.sub(r"[\"*/:<>?\\|]", "_", filename)
@@ -1586,8 +1650,8 @@ def sanitize_filename(filename, max_length):
 
 
 def sanitize_filename_ext(filename, ext, max_length, max_length_with_ext):
-    """
-    Generate a sanitized version of a filename and extension.
+    """Generate a sanitized version of a filename and extension.
+
     Truncate filename if greater than max_length.
     Truncate extension if filename.extension is greater than max_length_with_ext.
     :param str filename: filename without extension
@@ -1601,12 +1665,12 @@ def sanitize_filename_ext(filename, ext, max_length, max_length_with_ext):
     """
     sanitized_fn = sanitize_filename(filename, max_length)
     sanitized_ext = sanitize_filename(ext, max_length_with_ext - len(sanitized_fn))
-    return (sanitized_fn, "." + sanitized_ext)
+    return (sanitized_fn, ('.' + sanitized_ext) if sanitized_ext else '')
 
 
 def find_mount_point(directory):
-    """
-    Try to find the mount point for a given directory.
+    """Try to find the mount point for a given directory.
+
     If the directory is itself a mount point, return
     it. If not, remove the last part of the path and
     re-check if it's a mount point. If the directory
@@ -1630,44 +1694,26 @@ def find_mount_point(directory):
       ...
     ValueError: Directory names should be of type str.
 
-    >>> from minimock import mock, restore
+    >>> from unittest import mock
     >>> mocked_mntpoints = ('/', '/home', '/media/usbdisk', '/media/cdrom')
-    >>> mock('os.path.ismount', returns_func=lambda x: x in mocked_mntpoints)
-    >>>
-    >>> # For mocking os.getcwd(), we simply use a lambda to avoid the
-    >>> # massive output of "Called os.getcwd()" lines in this doctest
-    >>> os.getcwd = lambda: '/home/thp'
-    >>>
-    >>> find_mount_point('.')
-    Called os.path.ismount('/home/thp')
-    Called os.path.ismount('/home')
+    >>> def mocked(f, *args):
+    ...     with mock.patch('os.path.ismount', lambda x: x in mocked_mntpoints):
+    ...         with mock.patch('os.getcwd', lambda: '/home/thp'):
+    ...             return f(*args)
+    >>> mocked(find_mount_point, '.')
     '/home'
-    >>> find_mount_point('relativity')
-    Called os.path.ismount('/home/thp/relativity')
-    Called os.path.ismount('/home/thp')
-    Called os.path.ismount('/home')
+    >>> mocked(find_mount_point, 'relativity')
     '/home'
-    >>> find_mount_point('/media/usbdisk/')
-    Called os.path.ismount('/media/usbdisk')
+    >>> mocked(find_mount_point, '/media/usbdisk/')
     '/media/usbdisk'
-    >>> find_mount_point('/home/thp/Desktop')
-    Called os.path.ismount('/home/thp/Desktop')
-    Called os.path.ismount('/home/thp')
-    Called os.path.ismount('/home')
+    >>> mocked(find_mount_point, '/home/thp/Desktop')
     '/home'
-    >>> find_mount_point('/media/usbdisk/Podcasts/With Spaces')
-    Called os.path.ismount('/media/usbdisk/Podcasts/With Spaces')
-    Called os.path.ismount('/media/usbdisk/Podcasts')
-    Called os.path.ismount('/media/usbdisk')
+    >>> mocked(find_mount_point, '/media/usbdisk/Podcasts/With Spaces')
     '/media/usbdisk'
-    >>> find_mount_point('/home/')
-    Called os.path.ismount('/home')
+    >>> mocked(find_mount_point, '/home/')
     '/home'
-    >>> find_mount_point('/media/cdrom/../usbdisk/blubb//')
-    Called os.path.ismount('/media/usbdisk/blubb')
-    Called os.path.ismount('/media/usbdisk')
+    >>> mocked(find_mount_point, '/media/cdrom/../usbdisk/blubb//')
     '/media/usbdisk'
-    >>> restore()
     """
     if isinstance(directory, bytes):
         # We do not accept byte strings, because they could fail when
@@ -1697,21 +1743,24 @@ protocolPattern = re.compile(r'^\w+://')
 
 
 def isabs(string):
-    """
-    @return true if string is an absolute path or protocoladdress
-    for addresses beginning in http:// or ftp:// or ldap:// -
-    they are considered "absolute" paths.
+    """Return true if string is an absolute path or protocol address.
+
+    Addresses beginning in http:// or ftp:// or ldap:// are considered
+    absolute paths.
     Source: http://code.activestate.com/recipes/208993/
     """
-    if protocolPattern.match(string): return 1
+    if protocolPattern.match(string):
+        return 1
     return os.path.isabs(string)
 
 
 def relpath(p1, p2):
-    """
-    Finds relative path from p2 to p1, like os.path.relpath but handles
-    uris. Returns None if no such path exists due to the paths being on
-    different devices.
+    """Find relative path from p2 to p1.
+
+    Like os.path.relpath but handles uris.
+
+    Returns None if no such path exists due to the paths being on different
+    devices.
     """
     u1 = urllib.parse.urlparse(p1)
     u2 = urllib.parse.urlparse(p2)
@@ -1721,22 +1770,37 @@ def relpath(p1, p2):
 
 
 def get_hostname():
-    """Return the hostname of this computer
-
-    This can be implemented in a different way on each
-    platform and should yield a unique-per-user device ID.
-    """
+    """Return the hostname of this computer."""
     nodename = platform.node()
-
     if nodename:
         return nodename
 
     # Fallback - but can this give us "localhost"?
-    return socket.gethostname()
+    nodename = socket.gethostname()
+    if nodename:
+        return nodename
+
+    return 'unknown'
+
+
+def get_hostname_uid():
+    """Return the hostname of this computer and a random identifier.
+
+    This can be implemented in a different way on each
+    platform and should yield a unique-per-user device ID.
+    """
+    # Generate a 32-bit random identifier
+    random.seed()
+    uid = '%X' % random.getrandbits(32)
+
+    # conform to mygpo device uid limit
+    # (https://github.com/gpodder/mygpo/blob/master/mygpo/users/models.py#L235)
+    hostname = get_hostname()[:64 - len(uid) - 1]
+    return f'{hostname}-{uid}'
 
 
 def detect_device_type():
-    """Device type detection for gpodder.net
+    """Device type detection for gpodder.net.
 
     This function tries to detect on which
     kind of device gPodder is running on.
@@ -1752,7 +1816,7 @@ def detect_device_type():
 
 
 def write_m3u_playlist(m3u_filename, episodes, extm3u=True):
-    """Create an M3U playlist from a episode list
+    """Create an M3U playlist from a episode list.
 
     If the parameter "extm3u" is False, the list of
     episodes should be a list of filenames, and no
@@ -1797,7 +1861,7 @@ def generate_names(filename):
 
 
 def is_known_redirecter(url):
-    """Check if a URL redirect is expected, and no filenames should be updated
+    """Check if a URL redirect is expected, and no filenames should be updated.
 
     We usually honor URL redirects, and update filenames accordingly.
     In some cases (e.g. Soundcloud) this results in a worse filename,
@@ -1808,7 +1872,6 @@ def is_known_redirecter(url):
     with the new filename determined by the URL, we cannot really determine
     which one is the "better" URL (e.g. "n5rMSpXrqmR9.128.mp3" for Soundcloud).
     """
-
     # Soundcloud-hosted media downloads (we take the track name as filename)
     if url.startswith('http://ak-media.soundcloud.com/'):
         return True
@@ -1817,7 +1880,7 @@ def is_known_redirecter(url):
 
 
 def atomic_rename(old_name, new_name):
-    """Atomically rename/move a (temporary) file
+    """Atomically rename/move a (temporary) file.
 
     This is usually used when updating a file safely by writing
     the new contents into a temporary file and then moving the
@@ -1831,14 +1894,14 @@ def atomic_rename(old_name, new_name):
 
 
 def check_command(self, cmd):
-    """Check if a command line command/program exists"""
+    """Check if a command line command/program exists."""
     # Prior to Python 2.7.3, this module (shlex) did not support Unicode input.
     program = shlex.split(cmd)[0]
     return (find_command(program) is not None)
 
 
 def rename_episode_file(episode, filename):
-    """Helper method to update a PodcastEpisode object
+    """Update a PodcastEpisode object after a file rename.
 
     Useful after renaming/converting its download file.
     """
@@ -1855,8 +1918,7 @@ def rename_episode_file(episode, filename):
 
 
 def get_update_info():
-    """
-    Get up to date release information from gpodder.org.
+    """Get up to date release information from gpodder.org.
 
     Returns a tuple: (up_to_date, latest_version, release_date, days_since)
 
@@ -1896,7 +1958,7 @@ def run_in_background(function, daemon=False):
 
 
 def linux_get_active_interfaces():
-    """Get active network interfaces using 'ip addr'
+    """Get active network interfaces using 'ip addr'.
 
     A generator function yielding network interface
     names with an inet (or inet6) and a broadcast
@@ -1915,7 +1977,7 @@ def linux_get_active_interfaces():
 
 
 def osx_get_active_interfaces():
-    """Get active network interfaces using 'ifconfig'
+    """Get active network interfaces using 'ifconfig'.
 
     Returns a list of active network interfaces or an
     empty list if the device is offline. The loopback
@@ -1930,7 +1992,7 @@ def osx_get_active_interfaces():
 
 
 def unix_get_active_interfaces():
-    """Get active network interfaces using 'ifconfig'
+    """Get active network interfaces using 'ifconfig'.
 
     Returns a list of active network interfaces or an
     empty list if the device is offline. The loopback
@@ -1945,7 +2007,7 @@ def unix_get_active_interfaces():
 
 
 def connection_available():
-    """Check if an Internet connection is available
+    """Check if an Internet connection is available.
 
     Returns True if a connection is available (or if there
     is no way to determine the connection). Returns False
@@ -1971,15 +2033,13 @@ def connection_available():
             return online
 
     except Exception as e:
-        logger.warn('Cannot get connection status: %s', e, exc_info=True)
+        logger.warning('Cannot get connection status: %s', e, exc_info=True)
         # When we can't determine the connection status, act as if we're online (bug 1730)
         return True
 
 
 def website_reachable(url):
-    """
-    Check if a specific website is available.
-    """
+    """Check if a specific website is available."""
     if not connection_available():
         # No network interfaces up - assume website not reachable
         return (False, None)
@@ -2002,8 +2062,8 @@ def delete_empty_folders(top):
 
 
 def guess_encoding(filename):
-    """
-    read filename encoding as defined in PEP 263
+    """Read filename encoding as defined in PEP 263.
+
     - BOM marker => utf-8
     - coding: xxx comment in first 2 lines
     - else return None
@@ -2034,8 +2094,8 @@ def guess_encoding(filename):
 
 
 def iri_to_url(url):
-    """
-    Properly escapes Unicode characters in the URL path section
+    """Escape Unicode characters in the URL path section.
+
     TODO: Explore if this should also handle the domain
     Based on: http://stackoverflow.com/a/18269491/1072626
     In response to issue: https://github.com/gpodder/gpodder/issues/232
@@ -2059,7 +2119,6 @@ def iri_to_url(url):
 
 
 class Popen(subprocess.Popen):
-
     """A Popen process that tries not to leak file descriptors.
 
     This is a drop-in replacement for subprocess.Popen(), which takes the same
@@ -2152,15 +2211,15 @@ class Popen(subprocess.Popen):
 
 
 def _parse_mimetype_sorted_dictitems(mimetype):
-    """ python 3.5 unorderd dict compat for doctest. don't use! """
+    """Python 3.5 unordered dict compat for doctest. Don't use."""
     r = parse_mimetype(mimetype)
     return r[0], r[1], sorted(r[2].items())
 
 
 def parse_mimetype(mimetype):
-    """
-    parse mimetype into (type, subtype, parameters)
-    see RFC 2045 §5.1
+    """Parse mimetype into (type, subtype, parameters).
+
+    See RFC 2045 §5.1
     TODO: unhandled comments and continuations
 
     >>> _parse_mimetype_sorted_dictitems('application/atom+xml;profile=opds-catalog;type=feed;kind=acquisition')
@@ -2175,7 +2234,7 @@ def parse_mimetype(mimetype):
     ('application', 'x-myapp', [('a', 'b'), ('quoted', 'a quoted string with ; etc.')])
     """
     class MIMETypeException(Exception):
-        """ when an exception is encountered parsing mime type """
+        """Raised when an exception is encountered parsing mime type."""
 
     if not mimetype or '/' not in mimetype:
         return (None, None, {})
@@ -2248,7 +2307,7 @@ def parse_mimetype(mimetype):
 
 
 def get_header_param(headers, param, header_name):
-    """Extract a HTTP header parameter from a dict
+    """Extract a HTTP header parameter from a dict.
 
     Uses the "email" module to retrieve parameters
     from HTTP headers. This can be used to get the
@@ -2265,15 +2324,15 @@ def get_header_param(headers, param, header_name):
             raw_value = msg.get_param(param, header=header_name)
             if raw_value is not None:
                 value = email.utils.collapse_rfc2231_value(raw_value)
-    except Exception as e:
+    except Exception:
         logger.error('Cannot get %s from %s', param, header_name, exc_info=True)
 
     return value
 
 
 def response_text(response, default_encoding='utf-8'):
-    """
-    Utility method to return urlopen response's text.
+    """Return text from urlopen response.
+
     Requests uses only the charset info in content-type, then defaults to ISO-8859-1
     when content-type=text/*.
     We could use chardet (via response.apparent_encoding) but it's slow so often it's
@@ -2287,13 +2346,15 @@ def response_text(response, default_encoding='utf-8'):
 
 
 def mount_volume_for_file(file, op=None):
-    """
-    Utility method to mount the enclosing volume for the given file in a blocking
-    fashion
-    """
+    """Mount the enclosing volume for the given file in a blocking fashion."""
     import gi
-    gi.require_version('Gtk', '3.0')
-    from gi.repository import Gio, GLib, Gtk
+    gi.require_version('Gio', '2.0')
+    from gi.repository import Gio, GLib
+    if gpodder.ui.gtk:
+        gi.require_version('Gtk', '3.0')
+        from gi.repository import Gtk
+    else:
+        loop = GLib.MainLoop()
 
     result = True
     message = None
@@ -2304,29 +2365,34 @@ def mount_volume_for_file(file, op=None):
             file.mount_enclosing_volume_finish(res)
             result = True
         except GLib.Error as err:
-            if (not err.matches(Gio.io_error_quark(), Gio.IOErrorEnum.NOT_SUPPORTED) and
-                    not err.matches(Gio.io_error_quark(), Gio.IOErrorEnum.ALREADY_MOUNTED)):
+            if (not err.matches(Gio.io_error_quark(), Gio.IOErrorEnum.NOT_SUPPORTED)
+                    and not err.matches(Gio.io_error_quark(), Gio.IOErrorEnum.ALREADY_MOUNTED)):
                 message = err.message
                 result = False
         finally:
-            Gtk.main_quit()
+            if gpodder.ui.gtk:
+                Gtk.main_quit()
+            else:
+                loop.quit()
 
     file.mount_enclosing_volume(Gio.MountMountFlags.NONE, op, None, callback)
-    Gtk.main()
+    if gpodder.ui.gtk:
+        Gtk.main()
+    else:
+        loop.run()
     return result, message
 
 
-def scale_pixbuf(pixbuf, max):
-    import gi
+def scale_pixbuf(pixbuf, max_size):
     from gi.repository import GdkPixbuf
 
     w_cur = pixbuf.get_width()
     h_cur = pixbuf.get_height()
 
-    if w_cur <= max and h_cur <= max:
+    if w_cur <= max_size and h_cur <= max_size:
         return pixbuf
 
-    f = max / (w_cur if w_cur >= h_cur else h_cur)
+    f = max_size / (w_cur if w_cur >= h_cur else h_cur)
     w_new = int(w_cur * f)
     h_new = int(h_cur * f)
 

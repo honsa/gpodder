@@ -38,6 +38,7 @@ class gPodderAddPodcast(BuilderWidget):
         if hasattr(self, 'preset_url'):
             self.entry_url.set_text(self.preset_url)
         self.entry_url.connect('activate', self.on_entry_url_activate)
+        self.entry_url.connect('icon-press', self.on_clear_url)
         self.gPodderAddPodcast.show()
 
         if not hasattr(self, 'preset_url'):
@@ -49,9 +50,10 @@ class gPodderAddPodcast(BuilderWidget):
             clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
 
             def receive_clipboard_text(clipboard, text, second_try):
-                # Heuristic: If there is a space in the clipboard
-                # text, assume it's some arbitrary text, and no URL
-                if text is not None and ' ' not in text:
+                # Heuristic: If space is present in clipboard text
+                # normalize_feed_url will either fix to valid url or
+                # return None if URL cannot be validated
+                if text is not None:
                     url = util.normalize_feed_url(text)
                     if url is not None:
                         self.entry_url.set_text(url)
@@ -63,6 +65,9 @@ class gPodderAddPodcast(BuilderWidget):
                     clipboard.request_text(receive_clipboard_text, True)
             clipboard.request_text(receive_clipboard_text, False)
 
+    def on_clear_url(self, widget, icon_position, event):
+        self.entry_url.set_text('')
+
     def on_btn_close_clicked(self, widget):
         self.gPodderAddPodcast.destroy()
 
@@ -72,7 +77,7 @@ class gPodderAddPodcast(BuilderWidget):
 
     def receive_clipboard_text(self, clipboard, text, data=None):
         if text is not None:
-            self.entry_url.set_text(text)
+            self.entry_url.set_text(text.strip())
         else:
             self.show_message(_('Nothing to paste.'), _('Clipboard is empty'))
 
@@ -87,4 +92,4 @@ class gPodderAddPodcast(BuilderWidget):
         self.on_btn_close_clicked(widget)
         if self.add_podcast_list is not None:
             title = None  # FIXME: Add title GUI element
-            self.add_podcast_list([(title, url)])
+            self.add_podcast_list([(title, url, None)])

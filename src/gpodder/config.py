@@ -48,7 +48,7 @@ defaults = {
         'username': '',
         'password': '',
         'device': {
-            'uid': util.get_hostname(),
+            'uid': util.get_hostname_uid(),
             'type': 'desktop',
             'caption': _('gPodder on %s') % util.get_hostname(),
         },
@@ -120,6 +120,11 @@ defaults = {
                     'episode_column_sort_order': False,
                     'episode_column_order': [],
                 },
+                'podcastdirectory': {
+                    'width': -1,
+                    'height': -1,
+                    'x': -1, 'y': -1, 'maximized': False,
+                },
                 'preferences': {
                     'width': -1,
                     'height': -1,
@@ -154,22 +159,27 @@ defaults = {
 
             'toolbar': False,
             'new_episodes': 'show',  # ignore, show, queue, download
+            'only_added_are_new': False,  # Only just added episodes are considered new after an update
             'live_search_delay': 200,
             'search_always_visible': False,
+            'find_as_you_type': True,
 
             'podcast_list': {
-                'all_episodes': True,
-                'sections': True,
                 'view_mode': 1,
                 'hide_empty': False,
+                'all_episodes': True,
+                'sections': True,
             },
 
             'episode_list': {
-                'descriptions': True,
                 'view_mode': 1,
-                'columns': int('110', 2),  # bitfield of visible columns
                 'always_show_new': True,
+                'trim_title_prefix': True,
+                'descriptions': True,
+                'show_released_time': False,
+                'right_align_released_column': False,
                 'ctrl_click_to_sort': False,
+                'columns': int('110', 2),  # bitfield of visible columns
             },
 
             'download_list': {
@@ -177,6 +187,7 @@ defaults = {
             },
 
             'html_shownotes': True,  # enable webkit renderer
+            'color_scheme': None,  # system, light or dark. Initialized in app.py
         },
     },
 
@@ -190,21 +201,25 @@ defaults = {
         'delete_played_episodes': False,
         'delete_deleted_episodes': False,
 
-        'max_filename_length': 120,
+        'max_filename_length': 60,
+
+        'compare_episode_filesize': True,
 
         'custom_sync_name': '{episode.sortdate}_{episode.title}',
         'custom_sync_name_enabled': False,
+        'use_title_as_filename': False,
 
         'after_sync': {
             'mark_episodes_played': False,
             'delete_episodes': False,
-            'sync_disks': False,
+            'sync_disks': True,
         },
         'playlists': {
             'create': True,
             'two_way_sync': False,
-            'use_absolute_path': True,
+            'use_absolute_path': False,
             'folder': 'Playlists',
+            'extension': 'm3u',
         }
 
     },
@@ -220,37 +235,55 @@ defaults = {
         'fileformat': '720p',  # preferred file format (see vimeo.py)
     },
 
+    'network': {
+        'use_proxy': False,
+        'proxy_type': 'socks5h',  # Possible values: socks5h (routes dns through the proxy), socks5, http
+        'proxy_hostname': '127.0.0.1',
+        'proxy_port': '8123',
+        'proxy_use_username_password': False,
+        'proxy_username': '',
+        'proxy_password': '',
+    },
+
     'extensions': {
         'enabled': [],
     },
-}
-
-# The sooner this goes away, the better
-gPodderSettings_LegacySupport = {
-    'limit_rate': 'limit.bandwidth.enabled',
-    'limit_rate_value': 'limit.bandwidth.kbps',
-    'max_downloads_enabled': 'limit.downloads.enabled',
-    'max_downloads': 'limit.downloads.concurrent',
-    'episode_old_age': 'auto.cleanup.days',
-    'auto_remove_played_episodes': 'auto.cleanup.played',
-    'auto_remove_unfinished_episodes': 'auto.cleanup.unfinished',
-    'auto_remove_unplayed_episodes': 'auto.cleanup.unplayed',
-    'max_episodes_per_feed': 'limit.episodes',
-    'show_toolbar': 'ui.gtk.toolbar',
-    'episode_list_descriptions': 'ui.gtk.episode_list.descriptions',
-    'podcast_list_view_all': 'ui.gtk.podcast_list.all_episodes',
-    'podcast_list_sections': 'ui.gtk.podcast_list.sections',
-    'episode_list_view_mode': 'ui.gtk.episode_list.view_mode',
-    'podcast_list_view_mode': 'ui.gtk.podcast_list.view_mode',
-    'podcast_list_hide_boring': 'ui.gtk.podcast_list.hide_empty',
-    'episode_list_columns': 'ui.gtk.episode_list.columns',
-    'auto_cleanup_downloads': 'ui.gtk.download_list.remove_finished',
-    'auto_update_feeds': 'auto.update.enabled',
-    'auto_update_frequency': 'auto.update.frequency',
-    'auto_download': 'ui.gtk.new_episodes',
+    'sendto': {
+        'custom_file_format': '{episode.title}',
+        'custom_file_format_enabled': False,
+    },
+    'path': {
+        'alternate': '',
+    },
 }
 
 logger = logging.getLogger(__name__)
+
+# Global variable for network proxies. Updated when the network proxy in the config changes
+_proxies = None
+
+
+def get_network_proxy_observer(config):
+    """Return an observer function inside a closure containing given config instance."""
+
+    def get_proxies_from_config(config):
+        proxies = None
+        if config.network.use_proxy:
+            protocol = config.network.proxy_type
+            user_pass = ""
+            if config.network.proxy_use_username_password:
+                user_pass = f"{config.network.proxy_username}:{config.network.proxy_password}@"
+            proxy_url = f"{protocol}://{user_pass}{config.network.proxy_hostname}:{config.network.proxy_port}"
+            proxies = {"http": proxy_url, "https": proxy_url}
+        logger.debug(f"config observer returning proxies: {proxies}")
+        return proxies
+
+    def network_proxy_observer(name, old_value, new_value):
+        global _proxies
+        if name.startswith("network."):
+            _proxies = get_proxies_from_config(config)
+
+    return network_proxy_observer
 
 
 def config_value_to_string(config_value):
@@ -295,9 +328,12 @@ class Config(object):
 
         atexit.register(self.__atexit)
 
+        if self.path.alternate != '':
+            os.environ['PATH'] += os.pathsep + self.path.alternate
+            logger.info('Appending alternate PATH: %s' % self.path.alternate)
+
     def register_defaults(self, defaults):
-        """
-        Register default configuration options (e.g. for extensions)
+        """Register default configuration options (e.g. for extensions).
 
         This function takes a dictionary that will be merged into the
         current configuration if the keys don't yet exist. This can
@@ -306,9 +342,9 @@ class Config(object):
         self.__json_config._merge_keys(defaults)
 
     def add_observer(self, callback):
-        """
-        Add a callback function as observer. This callback
-        will be called when a setting changes. It should
+        """Add a callback function as observer.
+
+        This callback will be called when a setting changes. It should
         have this signature:
 
             observer(name, old_value, new_value)
@@ -319,16 +355,14 @@ class Config(object):
         if callback not in self.__observers:
             self.__observers.append(callback)
         else:
-            logger.warn('Observer already added: %s', repr(callback))
+            logger.warning('Observer already added: %s', repr(callback))
 
     def remove_observer(self, callback):
-        """
-        Remove an observer previously added to this object.
-        """
+        """Remove an observer previously added to this object."""
         if callback in self.__observers:
             self.__observers.remove(callback)
         else:
-            logger.warn('Observer not added: %s', repr(callback))
+            logger.warning('Observer not added: %s', repr(callback))
 
     def all_keys(self):
         return self.__json_config._keys_iter()
@@ -373,10 +407,11 @@ class Config(object):
 
         if os.path.exists(self.__filename):
             try:
-                data = open(self.__filename, 'rt').read()
+                with open(self.__filename, 'rt') as f:
+                    data = f.read()
                 new_keys_added = self.__json_config._restore(data)
             except:
-                logger.warn('Cannot parse config file: %s',
+                logger.warning('Cannot parse config file: %s',
                         self.__filename, exc_info=True)
                 new_keys_added = False
 
@@ -388,7 +423,7 @@ class Config(object):
         setattr(self, name, not getattr(self, name))
 
     def update_field(self, name, new_value):
-        """Update a config field, converting strings to the right types"""
+        """Update a config field, converting strings to the right types."""
         old_value = self._lookup(name)
         new_value = string_to_config_value(new_value, old_value)
         setattr(self, name, new_value)
@@ -408,9 +443,6 @@ class Config(object):
         self.schedule_save()
 
     def __getattr__(self, name):
-        if name in gPodderSettings_LegacySupport:
-            name = gPodderSettings_LegacySupport[name]
-
         return getattr(self.__json_config, name)
 
     def __setattr__(self, name, value):
@@ -418,14 +450,21 @@ class Config(object):
             object.__setattr__(self, name, value)
             return
 
-        if name in gPodderSettings_LegacySupport:
-            name = gPodderSettings_LegacySupport[name]
-
         setattr(self.__json_config, name, value)
 
     def migrate_defaults(self):
-        """ change default values in config """
+        """Change default values in config."""
         if self.device_sync.max_filename_length == 999:
             logger.debug("setting config.device_sync.max_filename_length=120"
                          " (999 is bad for NTFS and ext{2-4})")
             self.device_sync.max_filename_length = 120
+
+    def clamp_range(self, name, minval, maxval):
+        value = getattr(self, name)
+        if value < minval:
+            setattr(self, name, minval)
+            return True
+        if value > maxval:
+            setattr(self, name, maxval)
+            return True
+        return False

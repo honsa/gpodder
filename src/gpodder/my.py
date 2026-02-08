@@ -1,4 +1,3 @@
-#!/usr/bin/python
 # -*- coding: utf-8 -*-
 #
 # gPodder - A media aggregator and podcast client
@@ -125,7 +124,8 @@ class SubscribeAction(object):
 
 
 # New entity name for "received" actions
-class ReceivedSubscribeAction(SubscribeAction): pass
+class ReceivedSubscribeAction(SubscribeAction):
+    pass
 
 
 class UpdateDeviceAction(object):
@@ -155,7 +155,8 @@ class EpisodeAction(object):
 
 
 # New entity name for "received" actions
-class ReceivedEpisodeAction(EpisodeAction): pass
+class ReceivedEpisodeAction(EpisodeAction):
+    pass
 
 
 class RewrittenUrl(object):
@@ -201,8 +202,13 @@ class MygPoClient(object):
         self._worker_thread = None
         atexit.register(self._at_exit)
 
+        # Old versions could set uid to an empty string which causes mygpo to always fail
+        if self._config.mygpo.device.uid == '':
+            self._config.mygpo.device.uid = util.get_hostname_uid()
+            logger.warning('mygpo.device.uid was empty, initializing to "%s"' % self._config.mygpo.device.uid)
+
     def create_device(self):
-        """Uploads the device changes to the server
+        """Upload the device changes to the server.
 
         This should be called when device settings change
         or when the mygpo client functionality is enabled.
@@ -217,7 +223,7 @@ class MygPoClient(object):
         self._store.save(action)
 
     def get_rewritten_urls(self):
-        """Returns a list of rewritten URLs for uploads
+        """Return a list of rewritten URLs for uploads.
 
         This should be called regularly. Every object returned
         should be merged into the database, and the old_url
@@ -228,7 +234,7 @@ class MygPoClient(object):
         return rewritten_urls
 
     def process_episode_actions(self, find_episode, on_updated=None):
-        """Process received episode actions
+        """Process received episode actions.
 
         The parameter "find_episode" should be a function accepting
         two parameters (podcast_url and episode_url). It will be used
@@ -255,8 +261,8 @@ class MygPoClient(object):
                 logger.debug('Play action for %s', episode.url)
                 episode.mark(is_played=True)
 
-                if (action.timestamp > episode.current_position_updated and
-                        action.position is not None):
+                if (action.timestamp > episode.current_position_updated
+                        and action.position is not None):
                     logger.debug('Updating position for %s', episode.url)
                     episode.current_position = action.position
                     episode.current_position_updated = action.timestamp
@@ -283,7 +289,7 @@ class MygPoClient(object):
         logger.debug('Received episode actions processed.')
 
     def get_received_actions(self):
-        """Returns a list of ReceivedSubscribeAction objects
+        """Return a list of ReceivedSubscribeAction objects.
 
         The list might be empty. All these actions have to
         be processed. The user should confirm which of these
@@ -296,7 +302,7 @@ class MygPoClient(object):
         return self._store.load(ReceivedSubscribeAction)
 
     def confirm_received_actions(self, actions):
-        """Confirm that a list of actions has been processed
+        """Confirm that a list of actions has been processed.
 
         The UI should call this with a list of actions that
         have been accepted by the user and processed by the
@@ -306,7 +312,7 @@ class MygPoClient(object):
         self._store.remove(actions)
 
     def reject_received_actions(self, actions):
-        """Reject (undo) a list of ReceivedSubscribeAction objects
+        """Reject (undo) a list of ReceivedSubscribeAction objects.
 
         The UI should call this with a list of actions that
         have been rejected by the user. A reversed set of
@@ -445,7 +451,7 @@ class MygPoClient(object):
 
     def flush(self, now=False):
         if not self.can_access_webservice():
-            logger.warn('Flush requested, but sync disabled.')
+            logger.debug('Flush requested, but sync disabled.')
             return
 
         if self._worker_thread is None or now:
@@ -511,8 +517,8 @@ class MygPoClient(object):
                 # handle outside
                 raise
 
-            except Exception as e:
-                logger.warn('Exception while polling for episodes.', exc_info=True)
+            except Exception:
+                logger.warning('Exception while polling for episodes.', exc_info=True)
 
             # Step 2: Upload Episode actions
 
@@ -534,7 +540,7 @@ class MygPoClient(object):
             return True
 
         except (MissingCredentials, mygpoclient.http.Unauthorized):
-            logger.warn('Invalid credentials. Disabling gpodder.net.')
+            logger.warning('Invalid credentials. Disabling gpodder.net.')
             self._config.mygpo.enabled = False
             return False
 
@@ -599,7 +605,7 @@ class MygPoClient(object):
             return True
 
         except (MissingCredentials, mygpoclient.http.Unauthorized):
-            logger.warn('Invalid credentials. Disabling gpodder.net.')
+            logger.warning('Invalid credentials. Disabling gpodder.net.')
             self._config.mygpo.enabled = False
             return False
 
@@ -616,7 +622,7 @@ class MygPoClient(object):
             return True
 
         except (MissingCredentials, mygpoclient.http.Unauthorized):
-            logger.warn('Invalid credentials. Disabling gpodder.net.')
+            logger.warning('Invalid credentials. Disabling gpodder.net.')
             self._config.mygpo.enabled = False
             return False
 
@@ -632,7 +638,7 @@ class MygPoClient(object):
             devices = self._client.get_devices()
 
         except (MissingCredentials, mygpoclient.http.Unauthorized):
-            logger.warn('Invalid credentials. Disabling gpodder.net.')
+            logger.warning('Invalid credentials. Disabling gpodder.net.')
             self._config.mygpo.enabled = False
             raise
 
@@ -656,11 +662,11 @@ class Directory(object):
         self.client = public.PublicClient()
 
     def toplist(self):
-        return [(p.title or p.url, p.url)
+        return [(p.title or p.url, p.url, None)
                 for p in self.client.get_toplist()
                 if p.url]
 
     def search(self, query):
-        return [(p.title or p.url, p.url)
+        return [(p.title or p.url, p.url, None)
                 for p in self.client.search_podcasts(query)
                 if p.url]

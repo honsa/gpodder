@@ -17,9 +17,9 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
 
-# Notification implementation for Windows
 # Sean Munkel; 2012-12-29
-"""
+"""Notification implementation for Windows.
+
 Current state (2018/07/29 ELL):
  - I can't get pywin32 to work in msys2 (the platform used for this python3/gtk3 installer)
    so existing code using COM doesn't work.
@@ -43,11 +43,6 @@ import sys
 import tempfile
 
 import gpodder
-
-import gi  # isort:skip
-gi.require_version('Gtk', '3.0')  # isort:skip
-from gi.repository import Gtk  # isort:skip
-
 
 logger = logging.getLogger(__name__)
 _ = gpodder.gettext
@@ -105,7 +100,7 @@ try {{
         [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($APP_ID).Show($toast)
         Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force    # Delete this script temp file.
     }} else {{
-        # use older Baloon notification when not on Windows 10
+        # use older Balloon notification when not on Windows 10
         [System.Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms")
         $o = New-Object System.Windows.Forms.NotifyIcon
 

@@ -7,18 +7,18 @@ import subprocess
 import sys
 import time
 import traceback
-from os.path import dirname, expanduser, join
+from os.path import join
 from subprocess import PIPE, CalledProcessError, Popen
 
 
 class MakeCertPem:
-    """ create openssl cert bundle from system certificates """
+    """Create openssl cert bundle from system certificates."""
 
     def __init__(self, openssl):
         self.openssl = openssl
 
     def is_valid_cert(self, cert):
-        """ check if cert is valid according to openssl"""
+        """Check if cert is valid according to openssl."""
         cmd = [self.openssl, "x509", "-inform", "pem", "-checkend", "0", "-noout"]
         # print("D: is_valid_cert %r" % cmd)
         proc = Popen(cmd, stdin=PIPE, stdout=PIPE, stderr=PIPE)
@@ -27,14 +27,15 @@ class MakeCertPem:
         return proc.returncode == 0
 
     def get_certs(self):
-        """ extract System's certificates then filter them by validity
-            and return a list of text of valid certs
+        """Extract System's certificates and filter them by validity.
+
+        Return a list of texts of valid certs
         """
         cmd = ["security", "find-certificate", "-a", "-p",
                "/System/Library/Keychains/SystemRootCertificates.keychain"]
-        cert_re = re.compile(b"^-----BEGIN CERTIFICATE-----$" +
-                             b".+?" +
-                             b"^-----END CERTIFICATE-----$", re.M | re.S)
+        cert_re = re.compile(b"^-----BEGIN CERTIFICATE-----$"
+                             + b".+?"
+                             + b"^-----END CERTIFICATE-----$", re.M | re.S)
         try:
             certs_str = subprocess.check_output(cmd)
             all_certs = cert_re.findall(certs_str)
@@ -52,12 +53,12 @@ class MakeCertPem:
 
     @staticmethod
     def write_certs(certs, dest):
-        """ write concatenated certs to dest """
+        """Write concatenated certs to dest."""
         with open(dest, "wb") as output:
             output.write(b"\n".join(certs))
 
     def regen(self, dest):
-        """ main program """
+        """Regenerate the certificates."""
         print("I: make_cert_pem %s %s" % (self.openssl, dest))
         certs = self.get_certs()
         if certs is None:
@@ -104,20 +105,20 @@ os.environ['GI_TYPELIB_PATH'] = join(bundle_lib, 'girepository-1.0')
 # for forked python
 os.environ['PYTHONHOME'] = bundle_res
 # Set $PYTHON to point inside the bundle
-PYVER = 'python3.8'
+PYVER = 'python3.11'
 sys.path.append(bundle_res)
 print('System Path:\n', '\n'.join(sys.path))
 
 # see https://gpodder.github.io/docs/user-manual.html#gpodder-home-folder-and-download-location
 # To override gPodder home and/or download directory:
-# 1. uncomment (remove the pound sign and space) at the begining of the relevant line
+# 1. uncomment (remove the pound sign and space) at the beginning of the relevant line
 # 2. replace ~/gPodderData or ~/gPodderDownloads with the path you want for your gPodder home
 #    (you can move the original folder in the Finder first,
 #     then drag and drop to the launcher.py in TextEdit to ensure the correct path is set)
 # uncomment the following line to override gPodder home
-# os.environ['GPODDER_HOME'] = expanduser('~/gPodderData')
+# os.environ['GPODDER_HOME'] = os.path.expanduser('~/gPodderData')
 # uncomment the following line to override gPodder download directory
-# os.environ['GPODDER_DOWNLOAD_DIR'] = expanduser('~/gPodderDownloads')
+# os.environ['GPODDER_DOWNLOAD_DIR'] = os.path.expanduser('~/gPodderDownloads')
 
 for k, v in os.environ.items():
     print("%s=%s" % (k, v))
@@ -125,10 +126,10 @@ for k, v in os.environ.items():
 
 def gpodder_home():
     # don't inadvertently create the new gPodder home,
-    # it would be prefered to the old one
+    # it would be preferred to the old one
     default_path = join(os.environ['HOME'], 'Library', 'Application Support', 'gPodder')
     cands = [
-        os.environ.get('GPODDER_HOME'),
+        os.path.expanduser(os.environ.get('GPODDER_HOME')) if 'GPODDER_HOME' in os.environ else None,
         default_path,
         join(os.environ['HOME'], 'gPodder'),
     ]
@@ -155,7 +156,7 @@ if regen:
     openssl = join(bundle_bin, 'openssl')
     MakeCertPem(openssl).regen(cert_gen)
 else:
-    print('No regenerating', cert_gen, 'it\'s fresh enough')
+    print("No regenerating", cert_gen, "it's fresh enough")
 
 # and link to it by default. Users may want to point cert.pem to MacPorts
 # /opt/local/etc/openssl/cert.pem, for instance.
@@ -180,5 +181,4 @@ elif app == 'run-pip':
     # print("running", args)
     os.execv(python_exe, args)
 else:
-    import runpy
     runpy.run_path(join(bundle_bin, app), run_name='__main__')

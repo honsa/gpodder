@@ -20,7 +20,7 @@
 
 import ctypes
 from ctypes import HRESULT, Structure, byref, c_ulonglong
-from ctypes.wintypes import (BOOL, BYTE, DWORD, HANDLE, LPCWSTR, MAX_PATH,
+from ctypes.wintypes import (BOOL, BYTE, DWORD, HANDLE, LPCWSTR,
                              PULARGE_INTEGER, WORD)
 from uuid import UUID
 
@@ -153,6 +153,6 @@ def get_reg_current_user_string_value(subkey, value_name):
         if type_ == winreg.REG_SZ:
             return value
         else:
-            raise WindowsError("Unexpected type for value %s in registry: %i" % (valueName, type_))
+            raise WindowsError("Unexpected type for value %s in registry: %i" % (value_name, type_))
     except FileNotFoundError:
         return None

@@ -1,4 +1,3 @@
-#!/usr/bin/python
 # -*- coding: utf-8 -*-
 ####
 # 01/2011 Bernd Schlapsi <brot@gmx.info>
@@ -39,7 +38,6 @@ __title__ = _('Remove cover art from OGG files')
 __description__ = _('removes coverart from all downloaded ogg files')
 __authors__ = 'Bernd Schlapsi <brot@gmx.info>'
 __doc__ = 'https://gpodder.github.io/docs/extensions/removeoggcover.html'
-__payment__ = 'https://flattr.com/submit/auto?user_id=BerndSch&url=http://wiki.gpodder.org/wiki/Extensions/RemoveOGGCover'
 __category__ = 'post-download'
 
 
@@ -97,4 +95,4 @@ class gPodderExtension:
                 logger.info('Removed cover art from OGG file: %s', filename)
                 ogg.save()
         except Exception as e:
-            logger.warn('Failed to remove OGG cover: %s', e, exc_info=True)
+            logger.warning('Failed to remove OGG cover: %s', e, exc_info=True)

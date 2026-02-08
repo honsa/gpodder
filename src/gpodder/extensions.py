@@ -16,8 +16,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-"""
-Loads and executes user extensions
+"""Loads and executes user extensions.
 
 Extensions are Python scripts in "$GPODDER_HOME/Extensions". Each script must
 define a class named "gPodderExtension", otherwise it will be ignored.
@@ -31,16 +30,10 @@ For an example extension see share/gpodder/examples/extensions.py
 
 import functools
 import glob
-import imp
-import inspect
-import json
+import importlib
 import logging
 import os
 import re
-import shlex
-import subprocess
-import sys
-from datetime import datetime
 
 import gpodder
 from gpodder import util
@@ -60,7 +53,7 @@ DEFAULT_CATEGORY = _('Other')
 
 
 def call_extensions(func):
-    """Decorator to create handler functions in ExtensionManager
+    """Decorate a function to create handler in ExtensionManager.
 
     Calls the specified function in all user extensions that define it.
     """
@@ -99,7 +92,6 @@ class ExtensionMetadata(object):
     DEFAULTS = {
         'description': _('No description for this extension.'),
         'doc': None,
-        'payment': None,
     }
     SORTKEYS = {
         'title': 1,
@@ -134,7 +126,9 @@ class ExtensionMetadata(object):
         return sorted([(k, v) for k, v in list(self.__dict__.items())], key=kf)
 
     def check_ui(self, target, default):
-        """Checks metadata information like
+        """Check metadata information.
+
+        Metadata information:
             __only_for__ = 'gtk'
             __mandatory_in__ = 'gtk'
             __disable_in__ = 'gtk'
@@ -185,16 +179,18 @@ class MissingDependency(Exception):
         self.cause = cause
 
 
-class MissingModule(MissingDependency): pass
+class MissingModule(MissingDependency):
+    pass
 
 
-class MissingCommand(MissingDependency): pass
+class MissingCommand(MissingDependency):
+    pass
 
 
 class ExtensionContainer(object):
-    """An extension container wraps one extension module"""
+    """An extension container wraps one extension module."""
 
-    def __init__(self, manager, name, config, filename=None, module=None):
+    def __init__(self, manager, name, config, filename=None, priority=99, module=None):
         self.manager = manager
 
         self.name = name
@@ -203,13 +199,14 @@ class ExtensionContainer(object):
         self.module = module
         self.enabled = False
         self.error = None
+        self.priority = priority
 
         self.default_config = None
         self.parameters = None
         self.metadata = ExtensionMetadata(self, self._load_metadata(filename))
 
     def require_command(self, command):
-        """Checks if the given command is installed on the system
+        """Check if the given command is installed on the system.
 
         Returns the complete path of the command
 
@@ -222,7 +219,7 @@ class ExtensionContainer(object):
         return result
 
     def require_any_command(self, command_list):
-        """Checks if any of the given commands is installed on the system
+        """Check if any of the given commands is installed on the system.
 
         Returns the complete path of first found command in the list
 
@@ -242,7 +239,8 @@ class ExtensionContainer(object):
             return {}
 
         encoding = util.guess_encoding(filename)
-        extension_py = open(filename, "r", encoding=encoding).read()
+        with open(filename, "r", encoding=encoding) as f:
+            extension_py = f.read()
         metadata = dict(re.findall(r"__([a-z_]+)__ = '([^']+)'", extension_py))
 
         # Support for using gpodder.gettext() as _ to localize text
@@ -286,7 +284,7 @@ class ExtensionContainer(object):
             self.enabled = False
 
     def load_extension(self):
-        """Load and initialize the gPodder extension module"""
+        """Load and initialize the gPodder extension module."""
         if self.module is not None:
             logger.info('Module already loaded.')
             return
@@ -296,15 +294,16 @@ class ExtensionContainer(object):
                     self.name, self.metadata.only_for)
             return
 
-        basename, extension = os.path.splitext(os.path.basename(self.filename))
-        fp = open(self.filename, 'r')
+        basename, _ = os.path.splitext(os.path.basename(self.filename))
         try:
-            module_file = imp.load_module(basename, fp, self.filename,
-                    (extension, 'r', imp.PY_SOURCE))
+            # from load_source() on https://docs.python.org/dev/whatsnew/3.12.html
+            loader = importlib.machinery.SourceFileLoader(basename, self.filename)
+            spec = importlib.util.spec_from_file_location(basename, self.filename, loader=loader)
+            module_file = importlib.util.module_from_spec(spec)
+            loader.exec_module(module_file)
         finally:
             # Remove the .pyc file if it was created during import
             util.delete_file(self.filename + 'c')
-        fp.close()
 
         self.default_config = getattr(module_file, 'DefaultConfig', {})
         if self.default_config:
@@ -320,7 +319,7 @@ class ExtensionContainer(object):
 
 
 class ExtensionManager(object):
-    """Loads extensions and manages self-registering plugins"""
+    """Loads extensions and manages self-registering plugins."""
 
     def __init__(self, core):
         self.core = core
@@ -330,19 +329,23 @@ class ExtensionManager(object):
         core.config.add_observer(self._config_value_changed)
         enabled_extensions = core.config.extensions.enabled
 
+        self.builtins_directory = os.path.join(gpodder.prefix, 'share', 'gpodder',
+                'extensions')
+        self.user_extension_directory = os.path.join(gpodder.home, 'Extensions')
+
         if os.environ.get('GPODDER_DISABLE_EXTENSIONS', '') != '':
             logger.info('Disabling all extensions (from environment)')
             return
 
-        for name, filename in self._find_extensions():
-            logger.debug('Found extension "%s" in %s', name, filename)
+        for name, (extension_priority, filename) in self._find_extensions():
+            logger.debug('Found extension "%s", priority %s, in %s', name, extension_priority, filename)
             config = getattr(core.config.extensions, name)
-            container = ExtensionContainer(self, name, config, filename)
-            if (name in enabled_extensions or
-                    container.metadata.mandatory_in_current_ui):
+            container = ExtensionContainer(self, name, config, filename, priority=extension_priority)
+            if (name in enabled_extensions
+                    or container.metadata.mandatory_in_current_ui):
                 container.set_enabled(True)
-            if (name in enabled_extensions and
-                    container.metadata.disable_in_current_ui):
+            if (name in enabled_extensions
+                    and container.metadata.disable_in_current_ui):
                 container.set_enabled(False)
             self.containers.append(container)
 
@@ -366,7 +369,7 @@ class ExtensionManager(object):
                     'enabled' if new_enabled else 'disabled')
             container.set_enabled(new_enabled)
             if new_enabled and not container.enabled:
-                logger.warn('Could not enable extension: %s',
+                logger.warning('Could not enable extension: %s',
                         container.error)
                 self.core.config.extensions.enabled = [x
                         for x in self.core.config.extensions.enabled
@@ -376,28 +379,53 @@ class ExtensionManager(object):
         extensions = {}
 
         if not self.filenames:
-            builtins = os.path.join(gpodder.prefix, 'share', 'gpodder',
-                'extensions', '*.py')
-            user_extensions = os.path.join(gpodder.home, 'Extensions', '*.py')
-            self.filenames = glob.glob(builtins) + glob.glob(user_extensions)
+            builtins = os.path.join(self.builtins_directory, '*.py')
+            user_extensions = os.path.join(self.user_extension_directory, '*.py')
+            # sort filenames so that if duplicates are found in the same folder,
+            # the highest priority (lowest number) will always be used.
+            self.filenames = sorted(glob.glob(builtins), reverse=True) \
+                + sorted(glob.glob(user_extensions), reverse=True)
 
-        # Let user extensions override built-in extensions of the same name
+        # Let user extensions override built-in extensions of the same name.
+        # This inherently happens because we search the user extensions folder second,
+        # and the entries are put in the extensions dict by their name field.
         for filename in self.filenames:
             if not filename or not os.path.exists(filename):
                 logger.info('Skipping non-existing file: %s', filename)
                 continue
 
             name, _ = os.path.splitext(os.path.basename(filename))
-            extensions[name] = filename
 
-        return sorted(extensions.items())
+            # extensions with no priority get priority 99
+            priority = 99
+            m = re.fullmatch(r'^([0-9]*)_(.+)', name)
+            if m:
+                if m.group(1):
+                    # get ordering prefix
+                    priority = int(m.group(1))
+                # strip ordering prefix from name (or leading _)
+                name = m.group(2)
+            _, previous_filename = extensions.get(name, (None, None))
+            if previous_filename is not None:
+                if os.path.dirname(filename) == os.path.dirname(previous_filename):
+                    logger.warning("extension at %s will be ignored in favor of %s in the same directory", previous_filename, filename)
+                else:
+                    logger.info("extension at %s will be ignored in favor of %s", previous_filename, filename)
+            extensions[name] = (priority, filename)
+
+        # sort by priority - extensions with same priority will be sorted by name
+        def sort_key(kv):
+            name, (priority, filename) = kv
+            return (priority, name)
+
+        return sorted(extensions.items(), key=sort_key)
 
     def get_extensions(self):
-        """Get a list of all loaded extensions and their enabled flag"""
+        """Get a list of all loaded extensions and their enabled flag."""
         return [c for c in self.containers
-            if c.metadata.available_for_current_ui and
-            not c.metadata.mandatory_in_current_ui and
-            not c.metadata.disable_in_current_ui]
+            if c.metadata.available_for_current_ui
+            and not c.metadata.mandatory_in_current_ui
+            and not c.metadata.disable_in_current_ui]
 
     # Define all known handler functions here, decorate them with the
     # "call_extension" decorator to forward all calls to extension scripts that have
@@ -412,26 +440,23 @@ class ExtensionManager(object):
         @param model: A gpodder.model.Model instance
         @param update_podcast_callback: Function to update a podcast feed
         @param download_episode_callback: Function to download an episode
-        """
-        pass
+        """  # noqa: D401
 
     @call_extensions
     def on_podcast_subscribe(self, podcast):
         """Called when the user subscribes to a new podcast feed.
 
         @param podcast: A gpodder.model.PodcastChannel instance
-        """
-        pass
+        """  # noqa: D401
 
     @call_extensions
     def on_podcast_updated(self, podcast):
-        """Called when a podcast feed was updated
+        """Called when a podcast feed was updatedi.
 
         This extension will be called even if there were no new episodes.
 
         @param podcast: A gpodder.model.PodcastChannel instance
-        """
-        pass
+        """  # noqa: D401
 
     @call_extensions
     def on_podcast_update_failed(self, podcast, exception):
@@ -440,69 +465,61 @@ class ExtensionManager(object):
         @param podcast: A gpodder.model.PodcastChannel instance
 
         @param exception: The reason.
-        """
-        pass
+        """  # noqa: D401
 
     @call_extensions
     def on_podcast_save(self, podcast):
-        """Called when a podcast is saved to the database
+        """Called when a podcast is saved to the database.
 
         This extensions will be called when the user edits the metadata of
         the podcast or when the feed was updated.
 
         @param podcast: A gpodder.model.PodcastChannel instance
-        """
-        pass
+        """  # noqa: D401
 
     @call_extensions
     def on_podcast_delete(self, podcast):
-        """Called when a podcast is deleted from the database
+        """Called when a podcast is deleted from the database.
 
         @param podcast: A gpodder.model.PodcastChannel instance
-        """
-        pass
+        """  # noqa: D401
 
     @call_extensions
     def on_episode_playback(self, episode):
-        """Called when an episode is played back
+        """Called when an episode is played back.
 
         This function will be called when the user clicks on "Play" or
         "Open" in the GUI to open an episode with the media player.
 
         @param episode: A gpodder.model.PodcastEpisode instance
-        """
-        pass
+        """  # noqa: D401
 
     @call_extensions
     def on_episode_save(self, episode):
-        """Called when an episode is saved to the database
+        """Called when an episode is saved to the database.
 
         This extension will be called when a new episode is added to the
         database or when the state of an existing episode is changed.
 
         @param episode: A gpodder.model.PodcastEpisode instance
-        """
-        pass
+        """  # noqa: D401
 
     @call_extensions
     def on_episode_downloaded(self, episode):
-        """Called when an episode has been downloaded
+        """Called when an episode has been downloaded.
 
         You can retrieve the filename via episode.local_filename(False)
 
         @param episode: A gpodder.model.PodcastEpisode instance
-        """
-        pass
+        """  # noqa: D401
 
     @call_extensions
     def on_all_episodes_downloaded(self):
-        """Called when all episodes has been downloaded
-        """
-        pass
+        """Called when all episodes has been downloaded."""  # noqa: D401
 
     @call_extensions
     def on_episode_synced(self, device, episode):
-        """Called when an episode has been synced to device
+        """Called when an episode has been synced to device.
 
         You can retrieve the filename via episode.local_filename(False)
         For MP3PlayerDevice:
@@ -513,12 +530,15 @@ class ExtensionManager(object):
 
         @param device: A gpodder.sync.Device instance
         @param episode: A gpodder.model.PodcastEpisode instance
-        """
-        pass
+        """  # noqa: D401
+
+    @call_extensions
+    def on_all_episodes_synced(self):
+        """Called when all episodes have been synchronized."""  # noqa: D401
 
     @call_extensions
     def on_create_menu(self):
-        """Called when the Extras menu is created
+        """Called when the Extras menu is created.
 
         You can add additional Extras menu entries here. You have to return a
         list of tuples, where the first item is a label and the second item is a
@@ -527,12 +547,11 @@ class ExtensionManager(object):
         Example return value:
 
         [('Sync to Smartphone', lambda : ...)]
-        """
-        pass
+        """  # noqa: D401
 
     @call_extensions
     def on_episodes_context_menu(self, episodes):
-        """Called when the episode list context menu is opened
+        """Called when the episode list context menu is opened.
 
         You can add additional context menu entries here. You have to
         return a list of tuples, where the first item is a label and
@@ -544,12 +563,11 @@ class ExtensionManager(object):
         [('Mark as new', lambda episodes: ...)]
 
         @param episodes: A list of gpodder.model.PodcastEpisode instances
-        """
-        pass
+        """  # noqa: D401
 
     @call_extensions
     def on_channel_context_menu(self, channel):
-        """Called when the channel list context menu is opened
+        """Called when the channel list context menu is opened.
 
         You can add additional context menu entries here. You have to return a
         list of tuples, where the first item is a label and the second item is a
@@ -559,53 +577,46 @@ class ExtensionManager(object):
 
         [('Update channel', lambda channel: ...)]
         @param channel: A gpodder.model.PodcastChannel instance
-        """
-        pass
+        """  # noqa: D401
 
     @call_extensions
     def on_episode_delete(self, episode, filename):
-        """Called just before the episode's disk file is about to be
-        deleted."""
-        pass
+        """Called before the episode's disk file is about to be deleted."""  # noqa: D401
 
     @call_extensions
     def on_episode_removed_from_podcast(self, episode):
-        """Called just before the episode is about to be removed from
-        the podcast channel, e.g., when the episode has not been
-        downloaded and it disappears from the feed.
+        """Called before the episode is about to be removed from a channel.
+
+        E.g., when the episode has not been downloaded and it disappears from the feed.
 
         @param podcast: A gpodder.model.PodcastChannel instance
-        """
-        pass
+        """  # noqa: D401
 
     @call_extensions
     def on_notification_show(self, title, message):
-        """Called when a notification should be shown
+        """Called when a notification should be shown.
 
         @param title: title of the notification
         @param message: message of the notification
-        """
-        pass
+        """  # noqa: D401
 
     @call_extensions
     def on_download_progress(self, progress):
-        """Called when the overall download progress changes
+        """Called when the overall download progress changes.
 
         @param progress: The current progress value (0..1)
-        """
-        pass
+        """  # noqa: D401
 
     @call_extensions
     def on_ui_object_available(self, name, ui_object):
-        """Called when an UI-specific object becomes available
+        """Called when an UI-specific object becomes available.
 
         XXX: Experimental. This hook might go away without notice (and be
         replaced with something better). Only use for in-tree extensions.
 
         @param name: The name/ID of the object
         @param ui_object: The object itself
-        """
-        pass
+        """  # noqa: D401
 
     @call_extensions
     def on_application_started(self):
@@ -617,23 +628,21 @@ class ExtensionManager(object):
         enabled but only on following startups.
 
         It is called after on_ui_object_available and on_ui_initialized.
-        """
-        pass
+        """  # noqa: D401
 
     @call_extensions
     def on_find_partial_downloads_done(self):
-        """Called when the application started and the lookout for resume is done
+        """Called when the application started and the lookout for resume is done.
 
         This is mainly for extensions scheduling refresh or downloads at startup,
         to prevent race conditions with the find_partial_downloads method.
 
         It is called after on_application_started.
-        """
-        pass
+        """  # noqa: D401
 
     @call_extensions
     def on_preferences(self):
-        """Called when the preferences dialog is opened
+        """Called when the preferences dialog is opened.
 
         You can add additional tabs to the preferences dialog here. You have to
         return a list of tuples, where the first item is a label and the second
@@ -642,12 +651,11 @@ class ExtensionManager(object):
         Example return value:
 
         [('Tab name', lambda: ...)]
-        """
-        pass
+        """  # noqa: D401
 
     @call_extensions
     def on_channel_settings(self, channel):
-        """Called when a channel settings dialog is opened
+        """Called when a channel settings dialog is opened.
 
         You can add additional tabs to the channel settings dialog here. You
         have to return a list of tuples, where the first item is a label and the
@@ -659,5 +667,4 @@ class ExtensionManager(object):
         [('Tab name', lambda channel: ...)]
 
         @param channel: A gpodder.model.PodcastChannel instance
-        """
-        pass
+        """  # noqa: D401

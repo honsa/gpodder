@@ -64,13 +64,15 @@ class DownloadStatusModel(Gtk.ListStore):
 
         # Set up stock icon IDs for tasks
         self._status_ids = collections.defaultdict(lambda: None)
-        self._status_ids[download.DownloadTask.DOWNLOADING] = 'go-down'
-        self._status_ids[download.DownloadTask.DONE] = 'object-select-symbolic'
+        self._status_ids[download.DownloadTask.DOWNLOADING] = 'folder-download-symbolic'
+        self._status_ids[download.DownloadTask.DONE] = 'selection-mode-symbolic'
         self._status_ids[download.DownloadTask.FAILED] = 'dialog-error'
         self._status_ids[download.DownloadTask.CANCELLING] = 'media-playback-stop'
         self._status_ids[download.DownloadTask.CANCELLED] = 'media-playback-stop'
         self._status_ids[download.DownloadTask.PAUSING] = 'media-playback-pause'
         self._status_ids[download.DownloadTask.PAUSED] = 'media-playback-pause'
+
+        self.enabled = True
 
     def _format_message(self, episode, message, podcast):
         episode = html.escape(episode)
@@ -78,13 +80,13 @@ class DownloadStatusModel(Gtk.ListStore):
         message = html.escape(message)
         return '%s\n<small>%s - %s</small>' % (episode, message, podcast)
 
-    def request_update(self, iter, task=None):
+    def request_update(self, iterator, task=None):
         if task is None:
             # Ongoing update request from UI - get task from model
-            task = self.get_value(iter, self.C_TASK)
+            task = self.get_value(iterator, self.C_TASK)
         else:
             # Initial update request - update non-changing fields
-            self.set(iter,
+            self.set(iterator,
                     self.C_TASK, task,
                     self.C_URL, task.url)
 
@@ -93,10 +95,12 @@ class DownloadStatusModel(Gtk.ListStore):
                     task.STATUS_MESSAGE[task.status],
                     task.error_message)
         elif task.status == task.DOWNLOADING:
-            status_message = '%s (%.0f%%, %s/s)' % (
-                    task.STATUS_MESSAGE[task.status],
-                    task.progress * 100,
-                    util.format_filesize(task.speed))
+            status_message = _('%(status)s (%(progress).0f%%, %(rate)s/s, %(remaining)s)') % {
+                    'status': task.STATUS_MESSAGE[task.status],
+                    'progress': task.progress * 100,
+                    'rate': util.format_filesize(task.speed),
+                    'remaining': util.format_time(round((task.total_size * (1 - task.progress)) / task.speed)) if task.speed > 0 else '--:--'
+            }
         else:
             status_message = task.STATUS_MESSAGE[task.status]
 
@@ -118,7 +122,7 @@ class DownloadStatusModel(Gtk.ListStore):
         else:
             progress_message = ('unknown size')
 
-        self.set(iter,
+        self.set(iterator,
                 self.C_NAME, self._format_message(task.episode.title,
                     status_message, task.episode.channel.title),
                 self.C_PROGRESS, 100. * task.progress,
@@ -126,8 +130,8 @@ class DownloadStatusModel(Gtk.ListStore):
                 self.C_ICON_NAME, self._status_ids[task.status])
 
     def __add_new_task(self, task):
-        iter = self.append()
-        self.request_update(iter, task)
+        it = self.append()
+        self.request_update(it, task)
 
     def register_task(self, task, background=True):
         if background:
@@ -159,10 +163,7 @@ class DownloadStatusModel(Gtk.ListStore):
                         task.removed_from_list()
 
     def are_downloads_in_progress(self):
-        """
-        Returns True if there are any downloads in the
-        QUEUED or DOWNLOADING status, False otherwise.
-        """
+        """Return True if there are any downloads with QUEUED or DOWNLOADING status."""
         for row in self:
             task = row[DownloadStatusModel.C_TASK]
             if task is not None and \
@@ -184,7 +185,7 @@ class DownloadStatusModel(Gtk.ListStore):
             # this is the only thread accessing the list store, so it's safe
             # to assume a) the task is still queued and b) we can transition to downloading
             task.status = task.DOWNLOADING
-        except StopIteration as e:
+        except StopIteration:
             task = None
         # hand the task off to the worker thread
         dqr.resolve(task)
@@ -203,7 +204,8 @@ class DownloadStatusModel(Gtk.ListStore):
 
 
 class DownloadTaskMonitor(object):
-    """A helper class that abstracts download events"""
+    """A helper class that abstracts download events."""
+
     def __init__(self, episode, on_can_resume, on_can_pause, on_finished):
         self.episode = episode
         self._status = None

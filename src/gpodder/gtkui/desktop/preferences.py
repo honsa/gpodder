@@ -19,7 +19,7 @@
 
 import html
 import logging
-import urllib.parse
+from urllib.request import getproxies
 
 from gi.repository import Gdk, Gtk, Pango
 
@@ -51,13 +51,13 @@ class NewEpisodeActionList(Gtk.ListStore):
 
     def get_index(self):
         for index, row in enumerate(self):
-            if self._config.auto_download == row[self.C_AUTO_DOWNLOAD]:
+            if self._config.ui.gtk.new_episodes == row[self.C_AUTO_DOWNLOAD]:
                 return index
 
         return 1  # Some sane default
 
     def set_index(self, index):
-        self._config.auto_download = self[index][self.C_AUTO_DOWNLOAD]
+        self._config.ui.gtk.new_episodes = self[index][self.C_AUTO_DOWNLOAD]
 
 
 class DeviceTypeActionList(Gtk.ListStore):
@@ -93,11 +93,11 @@ class OnSyncActionList(Gtk.ListStore):
 
     def get_index(self):
         for index, row in enumerate(self):
-            if (self._config.device_sync.after_sync.delete_episodes and
-                    row[self.C_ON_SYNC_DELETE]):
+            if (self._config.device_sync.after_sync.delete_episodes
+                    and row[self.C_ON_SYNC_DELETE]):
                 return index
-            if (self._config.device_sync.after_sync.mark_episodes_played and
-                    row[self.C_ON_SYNC_MARK_PLAYED] and not
+            if (self._config.device_sync.after_sync.mark_episodes_played
+                    and row[self.C_ON_SYNC_MARK_PLAYED] and not
                     self._config.device_sync.after_sync.delete_episodes):
                 return index
         return 0  # Some sane default
@@ -105,6 +105,29 @@ class OnSyncActionList(Gtk.ListStore):
     def set_index(self, index):
         self._config.device_sync.after_sync.delete_episodes = self[index][self.C_ON_SYNC_DELETE]
         self._config.device_sync.after_sync.mark_episodes_played = self[index][self.C_ON_SYNC_MARK_PLAYED]
+
+
+class OnEpisodeFilenameList(Gtk.ListStore):
+    C_CAPTION, C_USE_EPISODE_TITLE, C_USE_CUSTOM_FORMAT = list(range(3))
+
+    def __init__(self, config):
+        Gtk.ListStore.__init__(self, str, bool, bool)
+        self._config = config
+        self.append((_('Same filename as local'), False, False))
+        self.append((_('Use episode title as filename'), True, False))
+        self.append((_('Use custom filename format'), False, True))
+
+    def get_index(self):
+        for index, row in enumerate(self):
+            if (self._config.device_sync.custom_sync_name_enabled and row[self.C_USE_CUSTOM_FORMAT]):
+                return index
+            if (self._config.device_sync.use_title_as_filename and row[self.C_USE_EPISODE_TITLE]):
+                return index
+        return 0
+
+    def set_index(self, index):
+        self._config.device_sync.use_title_as_filename = self[index][self.C_USE_EPISODE_TITLE]
+        self._config.device_sync.custom_sync_name_enabled = self[index][self.C_USE_CUSTOM_FORMAT]
 
 
 class YouTubeVideoFormatListModel(Gtk.ListStore):
@@ -120,8 +143,8 @@ class YouTubeVideoFormatListModel(Gtk.ListStore):
             }
             self.append((caption, 0))
 
-        for id, (fmt_id, path, description) in youtube.formats:
-            self.append((description, id))
+        for fmt, (fmt_id, path, description) in youtube.formats:
+            self.append((description, fmt))
 
     def get_index(self):
         for index, row in enumerate(self):
@@ -146,8 +169,8 @@ class YouTubeVideoHLSFormatListModel(Gtk.ListStore):
             }
             self.append((caption, 0))
 
-        for id, (fmt_id, path, description) in youtube.hls_formats:
-            self.append((description, id))
+        for fmt, (fmt_id, path, description) in youtube.hls_formats:
+            self.append((description, fmt))
 
     def get_index(self):
         for index, row in enumerate(self):
@@ -181,6 +204,26 @@ class VimeoVideoFormatListModel(Gtk.ListStore):
             self._config.vimeo.fileformat = value
 
 
+class ProxyTypeActionList(Gtk.ListStore):
+    C_CAPTION, C_PROXY_TYPE = list(range(2))
+
+    def __init__(self, config):
+        Gtk.ListStore.__init__(self, str, str)
+        self._config = config
+        self.append((_('SOCKS5h (Remote DNS)'), 'socks5h'))
+        self.append((_('SOCKS5'), 'socks5'))
+        self.append((_('HTTP'), 'http'))
+
+    def get_index(self):
+        for index, row in enumerate(self):
+            if self._config.network.proxy_type == row[self.C_PROXY_TYPE]:
+                return index
+        return 0
+
+    def set_index(self, index):
+        self._config.network.proxy_type = self[index][self.C_PROXY_TYPE]
+
+
 class gPodderPreferences(BuilderWidget):
     C_TOGGLE, C_LABEL, C_EXTENSION, C_SHOW_TOGGLE = list(range(4))
 
@@ -206,9 +249,25 @@ class gPodderPreferences(BuilderWidget):
         index = self.video_player_model.get_index(self._config.player.video)
         self.combo_video_player_app.set_active(index)
 
+        self.combo_color_scheme.remove_all()
+        self.combo_color_scheme.prepend('dark', 'Dark')
+        self.combo_color_scheme.prepend('light', 'Light')
+        cs = self._config.ui.gtk.color_scheme
+        if self.have_settings_portal:
+            self.combo_color_scheme.prepend('system', 'System')
+            self.combo_color_scheme.set_active_id(cs)
+        else:
+            if cs == 'system':
+                self.combo_color_scheme.set_active_id('light')
+                self._config.ui.gtk.color_scheme = 'light'
+            else:
+                self.combo_color_scheme.set_active_id(cs)
+        self._config.connect_gtk_combo_box_text('ui.gtk.color_scheme', self.combo_color_scheme)
+
         self.preferred_youtube_format_model = YouTubeVideoFormatListModel(self._config)
         self.combobox_preferred_youtube_format.set_model(self.preferred_youtube_format_model)
         cellrenderer = Gtk.CellRendererText()
+        cellrenderer.set_property('ellipsize', Pango.EllipsizeMode.END)
         self.combobox_preferred_youtube_format.pack_start(cellrenderer, True)
         self.combobox_preferred_youtube_format.add_attribute(cellrenderer, 'text', self.preferred_youtube_format_model.C_CAPTION)
         self.combobox_preferred_youtube_format.set_active(self.preferred_youtube_format_model.get_index())
@@ -216,6 +275,7 @@ class gPodderPreferences(BuilderWidget):
         self.preferred_youtube_hls_format_model = YouTubeVideoHLSFormatListModel(self._config)
         self.combobox_preferred_youtube_hls_format.set_model(self.preferred_youtube_hls_format_model)
         cellrenderer = Gtk.CellRendererText()
+        cellrenderer.set_property('ellipsize', Pango.EllipsizeMode.END)
         self.combobox_preferred_youtube_hls_format.pack_start(cellrenderer, True)
         self.combobox_preferred_youtube_hls_format.add_attribute(cellrenderer, 'text', self.preferred_youtube_hls_format_model.C_CAPTION)
         self.combobox_preferred_youtube_hls_format.set_active(self.preferred_youtube_hls_format_model.get_index())
@@ -223,31 +283,47 @@ class gPodderPreferences(BuilderWidget):
         self.preferred_vimeo_format_model = VimeoVideoFormatListModel(self._config)
         self.combobox_preferred_vimeo_format.set_model(self.preferred_vimeo_format_model)
         cellrenderer = Gtk.CellRendererText()
+        cellrenderer.set_property('ellipsize', Pango.EllipsizeMode.END)
         self.combobox_preferred_vimeo_format.pack_start(cellrenderer, True)
         self.combobox_preferred_vimeo_format.add_attribute(cellrenderer, 'text', self.preferred_vimeo_format_model.C_CAPTION)
         self.combobox_preferred_vimeo_format.set_active(self.preferred_vimeo_format_model.get_index())
 
-        self._config.connect_gtk_togglebutton('podcast_list_view_all',
-                                              self.checkbutton_show_all_episodes)
-        self._config.connect_gtk_togglebutton('podcast_list_sections',
-                                              self.checkbutton_podcast_sections)
+        self._config.connect_gtk_togglebutton('ui.gtk.find_as_you_type',
+                                              self.checkbutton_find_as_you_type)
+
+        self._config.connect_gtk_togglebutton('ui.gtk.podcast_list.hide_empty',
+                                              self.checkbutton_podcast_list_hide_empty)
+        self._config.connect_gtk_togglebutton('ui.gtk.podcast_list.all_episodes',
+                                              self.checkbutton_podcast_list_all_episodes)
+        self._config.connect_gtk_togglebutton('ui.gtk.podcast_list.sections',
+                                              self.checkbutton_podcast_list_sections)
+
+        self._config.connect_gtk_togglebutton('ui.gtk.episode_list.always_show_new',
+                                              self.checkbutton_episode_list_always_show_new)
+        self._config.connect_gtk_togglebutton('ui.gtk.episode_list.trim_title_prefix',
+                                              self.checkbutton_episode_list_trim_title_prefix)
+        self._config.connect_gtk_togglebutton('ui.gtk.episode_list.descriptions',
+                                              self.checkbutton_episode_list_descriptions)
 
         self.update_interval_presets = [0, 10, 30, 60, 2 * 60, 6 * 60, 12 * 60]
         adjustment_update_interval = self.hscale_update_interval.get_adjustment()
         adjustment_update_interval.set_upper(len(self.update_interval_presets) - 1)
-        if self._config.auto_update_frequency in self.update_interval_presets:
-            index = self.update_interval_presets.index(self._config.auto_update_frequency)
+        if self._config.auto.update.frequency in self.update_interval_presets:
+            index = self.update_interval_presets.index(self._config.auto.update.frequency)
             self.hscale_update_interval.set_value(index)
         else:
             # Patch in the current "custom" value into the mix
-            self.update_interval_presets.append(self._config.auto_update_frequency)
+            self.update_interval_presets.append(self._config.auto.update.frequency)
             self.update_interval_presets.sort()
 
             adjustment_update_interval.set_upper(len(self.update_interval_presets) - 1)
-            index = self.update_interval_presets.index(self._config.auto_update_frequency)
+            index = self.update_interval_presets.index(self._config.auto.update.frequency)
             self.hscale_update_interval.set_value(index)
 
-        self._config.connect_gtk_spinbutton('max_episodes_per_feed', self.spinbutton_episode_limit)
+        self._config.connect_gtk_spinbutton('limit.episodes', self.spinbutton_episode_limit)
+
+        self._config.connect_gtk_togglebutton('ui.gtk.only_added_are_new',
+                                              self.checkbutton_only_added_are_new)
 
         self.auto_download_model = NewEpisodeActionList(self._config)
         self.combo_auto_download.set_model(self.auto_download_model)
@@ -259,19 +335,19 @@ class gPodderPreferences(BuilderWidget):
         self._config.connect_gtk_togglebutton('check_connection',
                                               self.checkbutton_check_connection)
 
-        if self._config.auto_remove_played_episodes:
+        if self._config.auto.cleanup.played:
             adjustment_expiration = self.hscale_expiration.get_adjustment()
-            if self._config.episode_old_age > adjustment_expiration.get_upper():
+            if self._config.auto.cleanup.days > adjustment_expiration.get_upper():
                 # Patch the adjustment to include the higher current value
-                adjustment_expiration.set_upper(self._config.episode_old_age)
+                adjustment_expiration.set_upper(self._config.auto.cleanup.days)
 
-            self.hscale_expiration.set_value(self._config.episode_old_age)
+            self.hscale_expiration.set_value(self._config.auto.cleanup.days)
         else:
             self.hscale_expiration.set_value(0)
 
-        self._config.connect_gtk_togglebutton('auto_remove_unplayed_episodes',
+        self._config.connect_gtk_togglebutton('auto.cleanup.unplayed',
                                               self.checkbutton_expiration_unplayed)
-        self._config.connect_gtk_togglebutton('auto_remove_unfinished_episodes',
+        self._config.connect_gtk_togglebutton('auto.cleanup.unfinished',
                                               self.checkbutton_expiration_unfinished)
 
         self.device_type_model = DeviceTypeActionList(self._config)
@@ -289,6 +365,13 @@ class gPodderPreferences(BuilderWidget):
         self.combobox_on_sync.add_attribute(cellrenderer, 'text', OnSyncActionList.C_CAPTION)
         self.combobox_on_sync.set_active(self.on_sync_model.get_index())
 
+        self.episode_filename_model = OnEpisodeFilenameList(self._config)
+        self.combobox_episode_filename.set_model(self.episode_filename_model)
+        cellrenderer = Gtk.CellRendererText()
+        self.combobox_episode_filename.pack_start(cellrenderer, True)
+        self.combobox_episode_filename.add_attribute(cellrenderer, 'text', OnEpisodeFilenameList.C_CAPTION)
+        self.combobox_episode_filename.set_active(self.episode_filename_model.get_index())
+
         self._config.connect_gtk_togglebutton('device_sync.skip_played_episodes',
                                               self.checkbutton_skip_played_episodes)
         self._config.connect_gtk_togglebutton('device_sync.playlists.create',
@@ -297,6 +380,16 @@ class gPodderPreferences(BuilderWidget):
                                               self.checkbutton_delete_using_playlists)
         self._config.connect_gtk_togglebutton('device_sync.delete_deleted_episodes',
                                               self.checkbutton_delete_deleted_episodes)
+        self._config.connect_gtk_togglebutton('device_sync.compare_episode_filesize',
+                                              self.checkbutton_compare_episode_filesize)
+        self._config.connect_gtk_togglebutton('device_sync.one_folder_per_podcast',
+                                              self.checkbutton_one_folder_per_podcast)
+        self._config.connect_gtk_togglebutton('device_sync.playlists.use_absolute_path',
+                                              self.checkbutton_playlists_use_absolute_path)
+
+        self._config.connect_gtk_spinbutton('device_sync.max_filename_length', self.spinbutton_max_filename_length)
+
+        self.entry_custom_sync_name.set_text(self._config.device_sync.custom_sync_name)
 
         # Have to do this before calling set_active on checkbutton_enable
         self._enable_mygpo = self._config.mygpo.enabled
@@ -306,22 +399,76 @@ class gPodderPreferences(BuilderWidget):
         self.entry_server.set_text(self._config.mygpo.server)
         self.entry_username.set_text(self._config.mygpo.username)
         self.entry_password.set_text(self._config.mygpo.password)
+        self.add_password_reveal(self.entry_password)
         self.entry_caption.set_text(self._config.mygpo.device.caption)
 
         # Disable mygpo sync while the dialog is open
         self._config.mygpo.enabled = False
 
+        # Network proxy settings UI
+        self._config.connect_gtk_togglebutton('network.use_proxy',
+                                              self.checkbutton_use_proxy)
+        self._config.connect_gtk_togglebutton('network.proxy_use_username_password',
+                                              self.checkbutton_proxy_use_username_password)
+        self.entry_proxy_hostname.set_text(self._config.network.proxy_hostname)
+        self.entry_proxy_port.set_text(self._config.network.proxy_port)
+        self.add_password_reveal(self.entry_proxy_password)
+        # This will disable the proxy input details on creation if checkbutton
+        # is unticked (value from _config) on each preferences menu creation
+        self.on_checkbutton_use_proxy_toggled(self.checkbutton_use_proxy)
+        self.on_checkbutton_proxy_use_username_password_toggled(self.checkbutton_proxy_use_username_password)
+        self.proxy_type_model = ProxyTypeActionList(self._config)
+        self.combobox_proxy_type.set_model(self.proxy_type_model)
+        self.combobox_proxy_type.pack_start(cellrenderer, True)
+        self.combobox_proxy_type.add_attribute(cellrenderer, 'text',
+                                               ProxyTypeActionList.C_CAPTION)
+        self.combobox_proxy_type.set_active(self.proxy_type_model.get_index())
+        env_proxies = getproxies()
+        self.label_env_proxy_descr.set_visible(bool(env_proxies))
+        self.label_env_proxy.set_visible(bool(env_proxies))
+        if env_proxies:
+            env_proxies_str = ''
+            for var, url in env_proxies.items():
+                env_proxies_str += f"{var}_proxy={url}\n"
+            self.label_env_proxy.set_text(env_proxies_str)
+
         # Configure the extensions manager GUI
+        util.make_directory(gpodder.user_extensions.user_extension_directory)
         self.set_extension_preferences()
 
         self._config.connect_gtk_window(self.main_window, 'preferences', True)
 
         gpodder.user_extensions.on_ui_object_available('preferences-gtk', self)
 
+        self.inject_extensions_preferences(init=True)
+
+        self.prefs_stack.foreach(self._wrap_checkbox_labels)
+
+    def _wrap_checkbox_labels(self, w, *args):
+        if w.get_name().startswith("no_label_wrap"):
+            return
+        elif isinstance(w, Gtk.CheckButton):
+            label = w.get_child()
+            label.set_line_wrap(True)
+        elif isinstance(w, Gtk.Container):
+            w.foreach(self._wrap_checkbox_labels)
+
+    def inject_extensions_preferences(self, init=False):
+        if not init:
+            # remove preferences buttons for all extensions
+            for child in self.prefs_stack.get_children():
+                if child.get_name().startswith("extension."):
+                    self.prefs_stack.remove(child)
+
+        # add preferences buttons for all extensions
         result = gpodder.user_extensions.on_preferences()
         if result:
             for label, callback in result:
-                self.notebook.append_page(callback(), Gtk.Label(label))
+                page = callback()
+                name = "extension." + label
+                page.set_name(name)
+                page.foreach(self._wrap_checkbox_labels)
+                self.prefs_stack.add_titled(page, name, label)
 
     def _extensions_select_function(self, selection, model, path, path_currently_selected):
         return model.get_value(model.get_iter(path), self.C_SHOW_TOGGLE)
@@ -413,11 +560,6 @@ class gPodderPreferences(BuilderWidget):
         menu_item.connect('activate', self.show_extension_info, model, container)
         menu.append(menu_item)
 
-        if container.metadata.payment:
-            menu_item = Gtk.MenuItem(_('Support the author'))
-            menu_item.connect('activate', self.open_weblink, container.metadata.payment)
-            menu.append(menu_item)
-
         menu.show_all()
         if event is None:
             func = TreeViewHelper.make_popup_position_func(treeview)
@@ -450,6 +592,7 @@ class gPodderPreferences(BuilderWidget):
                 self.on_extension_enabled(container.module)
             else:
                 self.on_extension_disabled(container.module)
+            self.inject_extensions_preferences()
         elif container.error is not None:
             if hasattr(container.error, 'message'):
                 error_msg = container.error.message
@@ -486,6 +629,12 @@ class gPodderPreferences(BuilderWidget):
     def on_button_advanced_clicked(self, widget):
         self.main_window.destroy()
         gPodderConfigEditor(self.parent_window, _config=self._config)
+
+    def on_button_system_extensions_clicked(self, widget):
+        util.gui_open(gpodder.user_extensions.builtins_directory, gui=self)
+
+    def on_button_user_extensions_clicked(self, widget):
+        util.gui_open(gpodder.user_extensions.user_extension_directory, gui=self)
 
     def on_combo_audio_player_app_changed(self, widget):
         index = self.combo_audio_player_app.get_active()
@@ -543,10 +692,10 @@ class gPodderPreferences(BuilderWidget):
         ret = ret.replace(' ', '\xa0')
         return ret
 
-    def on_update_interval_value_changed(self, range):
-        value = int(range.get_value())
-        self._config.auto_update_feeds = (value > 0)
-        self._config.auto_update_frequency = self.update_interval_presets[value]
+    def on_update_interval_value_changed(self, gtk_range):
+        value = int(gtk_range.get_value())
+        self._config.auto.update.enabled = (value > 0)
+        self._config.auto.update.frequency = self.update_interval_presets[value]
 
     def on_combo_auto_download_changed(self, widget):
         index = self.combo_auto_download.get_active()
@@ -560,16 +709,16 @@ class gPodderPreferences(BuilderWidget):
             return N_('after %(count)d day', 'after %(count)d days',
                       value) % {'count': value}
 
-    def on_expiration_value_changed(self, range):
-        value = int(range.get_value())
+    def on_expiration_value_changed(self, gtk_range):
+        value = int(gtk_range.get_value())
 
         if value == 0:
             self.checkbutton_expiration_unplayed.set_active(False)
-            self._config.auto_remove_played_episodes = False
-            self._config.auto_remove_unplayed_episodes = False
+            self._config.auto.cleanup.played = False
+            self._config.auto.cleanup.unplayed = False
         else:
-            self._config.auto_remove_played_episodes = True
-            self._config.episode_old_age = value
+            self._config.auto.cleanup.played = True
+            self._config.auto.cleanup.days = value
 
         self.checkbutton_expiration_unplayed.set_sensitive(value > 0)
         self.checkbutton_expiration_unfinished.set_sensitive(value > 0)
@@ -604,16 +753,24 @@ class gPodderPreferences(BuilderWidget):
         index = self.combobox_on_sync.get_active()
         self.on_sync_model.set_index(index)
 
+    def on_combobox_episode_filename_changed(self, widget):
+        index = self.combobox_episode_filename.get_active()
+        self.episode_filename_model.set_index(index)
+        self.entry_custom_sync_name.set_sensitive(
+            self._config.device_sync.custom_sync_name_enabled)
+
     def on_checkbutton_create_playlists_toggled(
             self, widget, device_type_changed=False):
         if not widget.get_active():
             self._config.device_sync.playlists.create = False
             self.toggle_playlist_interface(False)
+            self.checkbutton_playlists_use_absolute_path.set_sensitive(False)
             # need to read value of checkbutton from interface,
             # rather than value of parameter
         else:
             self._config.device_sync.playlists.create = True
             self.toggle_playlist_interface(True)
+            self.checkbutton_playlists_use_absolute_path.set_sensitive(True)
 
     def toggle_playlist_interface(self, enabled):
         if enabled and self._config.device_sync.device_type == 'filesystem':
@@ -623,11 +780,19 @@ class gPodderPreferences(BuilderWidget):
             children = self.btn_playlistfolder.get_children()
             if children:
                 label = children.pop()
-                label.set_alignment(0., .5)
+                label.set_ellipsize(Pango.EllipsizeMode.START)
+                label.set_xalign(0.0)
         else:
             self.btn_playlistfolder.set_sensitive(False)
             self.btn_playlistfolder.set_label('')
             self.checkbutton_delete_using_playlists.set_sensitive(False)
+
+    def on_checkbutton_use_title_as_filename_toggled(
+            self, widget):
+        if widget.get_active():
+            self._config.device_sync.use_title_as_filename = True
+        else:
+            self._config.device_sync.use_title_as_filename = False
 
     def on_combobox_device_type_changed(self, widget):
         index = self.combobox_device_type.get_active()
@@ -641,18 +806,25 @@ class gPodderPreferences(BuilderWidget):
             self.checkbutton_delete_using_playlists.set_sensitive(False)
             self.combobox_on_sync.set_sensitive(False)
             self.checkbutton_skip_played_episodes.set_sensitive(False)
+            self.combobox_episode_filename.set_sensitive(False)
+            self.entry_custom_sync_name.set_sensitive(False)
+            self.checkbutton_one_folder_per_podcast.set_sensitive(False)
+            self.checkbutton_playlists_use_absolute_path.set_sensitive(False)
+            self.spinbutton_max_filename_length.set_sensitive(False)
         elif device_type == 'filesystem':
             self.btn_filesystemMountpoint.set_label(self._config.device_sync.device_folder or "")
             self.btn_filesystemMountpoint.set_sensitive(True)
             self.checkbutton_create_playlists.set_sensitive(True)
-            children = self.btn_filesystemMountpoint.get_children()
-            if children:
-                label = children.pop()
-                label.set_alignment(0., .5)
             self.toggle_playlist_interface(self._config.device_sync.playlists.create)
             self.combobox_on_sync.set_sensitive(True)
             self.checkbutton_skip_played_episodes.set_sensitive(True)
             self.checkbutton_delete_deleted_episodes.set_sensitive(True)
+            self.combobox_episode_filename.set_sensitive(True)
+            self.entry_custom_sync_name.set_sensitive(
+                self._config.device_sync.custom_sync_name_enabled)
+            self.checkbutton_one_folder_per_podcast.set_sensitive(True)
+            self.checkbutton_playlists_use_absolute_path.set_sensitive(True)
+            self.spinbutton_max_filename_length.set_sensitive(True)
         elif device_type == 'ipod':
             self.btn_filesystemMountpoint.set_label(self._config.device_sync.device_folder)
             self.btn_filesystemMountpoint.set_sensitive(True)
@@ -660,12 +832,20 @@ class gPodderPreferences(BuilderWidget):
             self.toggle_playlist_interface(False)
             self.checkbutton_delete_using_playlists.set_sensitive(False)
             self.combobox_on_sync.set_sensitive(False)
-            self.checkbutton_skip_played_episodes.set_sensitive(False)
+            self.checkbutton_skip_played_episodes.set_sensitive(True)
+            self.checkbutton_delete_deleted_episodes.set_sensitive(True)
+            self.combobox_episode_filename.set_sensitive(False)
+            self.entry_custom_sync_name.set_sensitive(False)
+            self.checkbutton_one_folder_per_podcast.set_sensitive(False)
+            self.checkbutton_playlists_use_absolute_path.set_sensitive(False)
+            self.spinbutton_max_filename_length.set_sensitive(False)
+        self.checkbutton_compare_episode_filesize.set_sensitive(True)
 
-            children = self.btn_filesystemMountpoint.get_children()
-            if children:
-                label = children.pop()
-                label.set_alignment(0., .5)
+        children = self.btn_filesystemMountpoint.get_children()
+        if children:
+            label = children.pop()
+            label.set_ellipsize(Pango.EllipsizeMode.START)
+            label.set_xalign(0.0)
 
     def on_btn_device_mountpoint_clicked(self, widget):
         fs = Gtk.FileChooserDialog(title=_('Select folder for mount point'),
@@ -709,7 +889,36 @@ class gPodderPreferences(BuilderWidget):
                 children = self.btn_playlistfolder.get_children()
                 if children:
                     label = children.pop()
-                    label.set_alignment(0., .5)
+                    label.set_ellipsize(Pango.EllipsizeMode.START)
+                    label.set_xalign(0.0)
             break
 
         fs.destroy()
+
+    def on_checkbutton_use_proxy_toggled(self, widget):
+        widgets = (self.grid_network_proxy_details,
+                   self.vbox_network_proxy_username_password)
+        for w in widgets:
+            w.set_sensitive(widget.get_active())
+
+    def on_checkbutton_proxy_use_username_password_toggled(self, widget):
+        self.grid_network_proxy_username_password.set_sensitive(widget.get_active())
+
+    def on_combobox_proxy_type_changed(self, widget):
+        index = self.combobox_proxy_type.get_active()
+        self.proxy_type_model.set_index(index)
+
+    def on_proxy_hostname_changed(self, widget):
+        self._config.network.proxy_hostname = widget.get_text()
+
+    def on_proxy_port_changed(self, widget):
+        self._config.network.proxy_port = widget.get_text()
+
+    def on_proxy_username_changed(self, widget):
+        self._config.network.proxy_username = widget.get_text()
+
+    def on_proxy_password_changed(self, widget):
+        self._config.network.proxy_password = widget.get_text()
+
+    def on_custom_sync_name_changed(self, widget):
+        self._config.device_sync.custom_sync_name = widget.get_text()

@@ -24,16 +24,17 @@
 #  Based on libpodcasts.py (thp, 2005-10-29)
 #
 
-import collections
 import datetime
 import glob
 import hashlib
+import json
 import logging
 import os
 import re
 import shutil
 import string
 import time
+import urllib.parse
 
 import podcastparser
 
@@ -46,39 +47,39 @@ _ = gpodder.gettext
 
 
 class Feed:
-    """ abstract class for presenting a parsed feed to PodcastChannel """
+    """Abstract class for presenting a parsed feed to PodcastChannel."""
 
     def get_title(self):
-        """ :return str: the feed's title """
+        """Return the feeds title or None."""
         return None
 
     def get_link(self):
-        """ :return str: link to the feed's website """
+        """Return the link to the feeds website or None."""
         return None
 
     def get_description(self):
-        """ :return str: feed's textual description """
+        """Return the feeds textual description or None."""
         return None
 
     def get_cover_url(self):
-        """ :return str: url of the feed's cover image """
+        """Return the URL of the feeds cover image or None."""
         return None
 
     def get_payment_url(self):
-        """ :return str: optional -- feed's payment url """
+        """Return the feeds payment url or None."""
         return None
 
     def get_http_etag(self):
-        """ :return str: optional -- last HTTP etag header, for conditional request next time """
+        """Return the last HTTP etag header, for conditional request next time, or None."""
         return None
 
     def get_http_last_modified(self):
-        """ :return str: optional -- last HTTP Last-Modified header, for conditional request next time """
+        """Return the last HTTP Last-Modified header, for conditional request next time, or None."""
         return None
 
     def get_new_episodes(self, channel, existing_guids):
-        """
-        Produce new episodes and update old ones.
+        """Produce new episodes and update old ones.
+
         Feed is a class to present results, so the feed shall have already been fetched.
         Existing episodes not in all_seen_guids will be purged from the database.
         :param PodcastChannel channel: the updated channel
@@ -88,8 +89,8 @@ class Feed:
         return ([], set())
 
     def get_next_page(self, channel, max_episodes):
-        """
-        Paginated feed support (RFC 5005).
+        """Paginated feed support (RFC 5005).
+
         If the feed is paged, return the next feed page.
         Returned page will in turn be asked for the next page, until None is returned.
         :return feedcore.Result: the next feed's page,
@@ -110,13 +111,13 @@ class PodcastParserFeed(Feed):
     def get_link(self):
         vid = youtube.get_youtube_id(self.feed['url'])
         if vid is not None:
-            self.feed['link'] = youtube.get_channel_id_url(self.feed['url'])
+            self.feed['link'] = youtube.get_channel_id_url(self.feed['url'], self.fetcher.feed_data)
         return self.feed.get('link')
 
     def get_description(self):
         vid = youtube.get_youtube_id(self.feed['url'])
         if vid is not None:
-            self.feed['description'] = youtube.get_channel_desc(self.feed['url'])
+            self.feed['description'] = youtube.get_channel_desc(self.feed['url'], self.fetcher.feed_data)
         return self.feed.get('description')
 
     def get_cover_url(self):
@@ -161,7 +162,7 @@ class PodcastParserFeed(Feed):
                 num_duplicate_guids += 1
                 channel._update_error = ('Discarded {} episode(s) with non-unique GUID, contact the podcast publisher to fix this issue.'
                         .format(num_duplicate_guids))
-                logger.warn('Discarded episode with non-unique GUID, contact the podcast publisher to fix this issue. [%s] [%s]',
+                logger.warning('Discarded episode with non-unique GUID, contact the podcast publisher to fix this issue. [%s] [%s]',
                         channel.title, episode.title)
                 continue
 
@@ -169,20 +170,18 @@ class PodcastParserFeed(Feed):
             # Detect (and update) existing episode based on GUIDs
             existing_episode = existing_guids.get(episode.guid, None)
             if existing_episode:
-                if existing_episode.total_time == 0 and 'youtube' in episode.url:
-                    # query duration for existing youtube episodes that haven't been downloaded or queried
-                    # such as live streams after they have ended
-                    existing_episode.total_time = youtube.get_total_time(episode)
-
                 existing_episode.update_from(episode)
-                existing_episode.save()
-                continue
-            elif episode.total_time == 0 and 'youtube' in episode.url:
-                # query duration for new youtube episodes
+                episode = existing_episode
+            else:
+                new_episodes.append(episode)
+
+            if episode.total_time == 0 and 'youtube' in episode.url:
+                # query duration for new and existing youtube episodes that haven't been
+                # downloaded or queried such as live streams after they have ended
                 episode.total_time = youtube.get_total_time(episode)
 
+            episode.cache_text_description()
             episode.save()
-            new_episodes.append(episode)
         return new_episodes, seen_guids
 
     def get_next_page(self, channel, max_episodes):
@@ -195,10 +194,8 @@ class PodcastParserFeed(Feed):
 
 
 class gPodderFetcher(feedcore.Fetcher):
-    """
-    This class implements fetching a channel from custom feed handlers
-    or the default using podcastparser
-    """
+    """Implements fetching a channel from custom feed handlers or the default using podcastparser."""
+
     def fetch_channel(self, channel, max_episodes):
         custom_feed = registry.feed_handler.resolve(channel, None, max_episodes)
         if custom_feed is not None:
@@ -215,7 +212,8 @@ class gPodderFetcher(feedcore.Fetcher):
         url = vimeo.get_real_channel_url(url)
         return url
 
-    def parse_feed(self, url, data_stream, headers, status, max_episodes=0, **kwargs):
+    def parse_feed(self, url, feed_data, data_stream, headers, status, max_episodes=0, **kwargs):
+        self.feed_data = feed_data
         try:
             feed = podcastparser.parse(url, data_stream)
             feed['url'] = url
@@ -238,17 +236,16 @@ class gPodderFetcher(feedcore.Fetcher):
 
 
 class PodcastModelObject(object):
-    """
-    A generic base class for our podcast model providing common helper
-    and utility functions.
-    """
+    """A generic base class for our podcast model providing common helper and utility functions."""
+
     __slots__ = ('id', 'parent', 'children')
 
     @classmethod
     def create_from_dict(cls, d, *args):
-        """
-        Create a new object, passing "args" to the constructor
-        and then updating the object with the values from "d".
+        """Create a podcast model from constructor args and dict.
+
+        Passes "args" to the constructor and then updates the object with
+        the values from "d".
         """
         o = cls(*args)
 
@@ -260,7 +257,8 @@ class PodcastModelObject(object):
 
 
 class PodcastEpisode(PodcastModelObject):
-    """holds data for one object in a channel"""
+    """Holds data for one object in a channel."""
+
     # In theory, Linux can have 255 bytes (not characters!) in a filename, but
     # filesystems like eCryptFS store metadata in the filename, making the
     # effective number of characters less than that. eCryptFS recommends
@@ -270,7 +268,7 @@ class PodcastEpisode(PodcastModelObject):
     MAX_FILENAME_LENGTH = 120  # without extension
     MAX_FILENAME_WITH_EXT_LENGTH = 140 - len(".partial.webm")  # with extension
 
-    __slots__ = schema.EpisodeColumns + ('_download_error',)
+    __slots__ = schema.EpisodeColumns + ('_download_error', '_text_description',)
 
     def _deprecated(self):
         raise Exception('Property is deprecated!')
@@ -279,8 +277,8 @@ class PodcastEpisode(PodcastModelObject):
     is_locked = property(fget=_deprecated, fset=_deprecated)
 
     def has_website_link(self):
-        return bool(self.link) and (self.link != self.url or
-                youtube.is_video_link(self.link))
+        return bool(self.link) and (self.link != self.url
+                or youtube.is_video_link(self.link))
 
     @classmethod
     def from_podcastparser_entry(cls, entry, channel):
@@ -288,17 +286,25 @@ class PodcastEpisode(PodcastModelObject):
         episode.guid = entry['guid']
         episode.title = entry['title']
         episode.link = entry['link']
-        episode.description = entry['description']
+        episode.episode_art_url = entry.get('episode_art_url')
+
+        # Only one of the two description fields should be set at a time.
+        # This keeps the database from doubling in size and reduces load time from slow storage.
+        # episode._text_description is initialized by episode.cache_text_description() from the set field.
+        # episode.html_description() returns episode.description_html or generates from episode.description.
         if entry.get('description_html'):
+            episode.description = ''
             episode.description_html = entry['description_html']
         else:
-            thumbnail = entry.get('episode_art_url')
-            description = util.remove_html_tags(episode.description or _('No description available'))
-            episode.description_html = util.nice_html_description(thumbnail, description)
+            episode.description = util.remove_html_tags(entry['description'] or '')
+            episode.description_html = ''
 
         episode.total_time = entry['total_time']
         episode.published = entry['published']
         episode.payment_url = entry['payment_url']
+        episode.chapters = None
+        if entry.get("chapters"):
+            episode.chapters = json.dumps(entry["chapters"])
 
         audio_available = any(enclosure['mime_type'].startswith('audio/') for enclosure in entry['enclosures'])
         video_available = any(enclosure['mime_type'].startswith('video/') for enclosure in entry['enclosures'])
@@ -311,6 +317,7 @@ class PodcastEpisode(PodcastModelObject):
             episode.url = _url
         media_available = audio_available or video_available or link_has_media
 
+        url_is_invalid = False
         for enclosure in entry['enclosures']:
             episode.mime_type = enclosure['mime_type']
 
@@ -326,6 +333,7 @@ class PodcastEpisode(PodcastModelObject):
 
             episode.url = util.normalize_feed_url(enclosure['url'])
             if not episode.url:
+                url_is_invalid = True
                 continue
 
             episode.file_size = enclosure['file_size']
@@ -334,7 +342,13 @@ class PodcastEpisode(PodcastModelObject):
         # Brute-force detection of the episode link
         episode.url = util.normalize_feed_url(entry['link'])
         if not episode.url:
-            return None
+            # The episode has no downloadable content.
+            # Set an empty URL so downloading will fail.
+            episode.url = ''
+            # Display an error icon if URL is invalid.
+            if url_is_invalid or (entry['link'] is not None and entry['link'] != ''):
+                episode._download_error = 'Invalid episode URL'
+            return episode
 
         if any(mod.is_video_link(episode.url) for mod in (youtube, vimeo)):
             return episode
@@ -350,7 +364,11 @@ class PodcastEpisode(PodcastModelObject):
         if link_has_media:
             return episode
 
-        return None
+        # The episode has no downloadable content.
+        # It is either a blog post or it links to a webpage with content accessible from shownotes title.
+        # Remove the URL so downloading will fail.
+        episode.url = ''
+        return episode
 
     def __init__(self, channel):
         self.parent = channel
@@ -363,8 +381,10 @@ class PodcastEpisode(PodcastModelObject):
         self.file_size = 0
         self.mime_type = 'application/octet-stream'
         self.guid = ''
+        self.episode_art_url = None
         self.description = ''
         self.description_html = ''
+        self.chapters = None
         self.link = ''
         self.published = 0
         self.download_filename = None
@@ -383,6 +403,7 @@ class PodcastEpisode(PodcastModelObject):
         self.last_playback = 0
 
         self._download_error = None
+        self._text_description = ''
 
     @property
     def channel(self):
@@ -394,7 +415,7 @@ class PodcastEpisode(PodcastModelObject):
 
     @property
     def trimmed_title(self):
-        """Return the title with the common prefix trimmed"""
+        """Return the title with the common prefix trimmed."""
         # Minimum amount of leftover characters after trimming. This
         # avoids things like "Common prefix 123" to become just "123".
         # If there are LEFTOVER_MIN or less characters after trimming,
@@ -404,8 +425,8 @@ class PodcastEpisode(PodcastModelObject):
         # "Podcast Name - Title" and "Podcast Name: Title" -> "Title"
         for postfix in (' - ', ': '):
             prefix = self.parent.title + postfix
-            if (self.title.startswith(prefix) and
-                    len(self.title) - len(prefix) > LEFTOVER_MIN):
+            if (self.title.startswith(prefix)
+                    and len(self.title) - len(prefix) > LEFTOVER_MIN):
                 return self.title[len(prefix):]
 
         regex_patterns = [
@@ -424,14 +445,14 @@ class PodcastEpisode(PodcastModelObject):
 
         # "#001: Title" -> "001: Title"
         if (
-                not self.parent._common_prefix and
-                re.match(r'^#\d+: ', self.title) and
-                len(self.title) - 1 > LEFTOVER_MIN):
+                not self.parent._common_prefix
+                and re.match(r'^#\d+: ', self.title)
+                and len(self.title) - 1 > LEFTOVER_MIN):
             return self.title[1:]
 
-        if (self.parent._common_prefix is not None and
-                self.title.startswith(self.parent._common_prefix) and
-                len(self.title) - len(self.parent._common_prefix) > LEFTOVER_MIN):
+        if (self.parent._common_prefix is not None
+                and self.title.startswith(self.parent._common_prefix)
+                and len(self.title) - len(self.parent._common_prefix) > LEFTOVER_MIN):
             return self.title[len(self.parent._common_prefix):]
 
         return self.title
@@ -452,9 +473,77 @@ class PodcastEpisode(PodcastModelObject):
 
         return task.status in (task.DOWNLOADING, task.QUEUED, task.PAUSING, task.PAUSED, task.CANCELLING)
 
+    def get_player(self, config):
+        file_type = self.file_type()
+        if file_type == 'video' and config.player.video and config.player.video != 'default':
+            player = config.player.video
+        elif file_type == 'audio' and config.player.audio and config.player.audio != 'default':
+            player = config.player.audio
+        else:
+            player = 'default'
+        return player
+
+    def can_play(self, config):
+        """gPodder.playback_episodes() filters selection with this method."""
+        return (self.was_downloaded(and_exists=True)
+                or self.can_preview()
+                or self.can_stream(config))
+
+    def can_preview(self):
+        return (self.downloading
+                and self.download_task.custom_downloader is not None
+                and self.download_task.custom_downloader.partial_filename is not None
+                and os.path.exists(self.download_task.custom_downloader.partial_filename))
+
+    def can_stream(self, config):
+        """Return True if episode can be streamed.
+
+        Don't try streaming if the user has not defined a player
+        or else we would probably open the browser when giving a URL to xdg-open.
+        We look at the audio or video player depending on its file type.
+        """
+        player = self.get_player(config)
+        return player and player != 'default'
+
+    def can_download(self):
+        """Return True if episode can be downloaded.
+
+        gPodder.on_download_selected_episodes() filters selection with this method.
+        PAUSING and PAUSED tasks can be resumed.
+        """
+        return not self.was_downloaded(and_exists=True) and (
+            self.download_task is None
+            or self.download_task.can_queue()
+            or self.download_task.status == self.download_task.PAUSING)
+
+    def can_pause(self):
+        """gPodder.on_pause_selected_episodes() filters selection with this method."""
+        return self.download_task is not None and self.download_task.can_pause()
+
+    def can_cancel(self):
+        """DownloadTask.cancel() only cancels the following tasks."""
+        return self.download_task is not None and self.download_task.can_cancel()
+
+    def can_delete(self):
+        """Return True, if episode can be deleted.
+
+        gPodder.delete_episode_list() filters out locked episodes,
+        and cancels all unlocked tasks in selection.
+        """
+        return self.state != gpodder.STATE_DELETED and not self.archive and (
+            self.download_task is None or self.download_task.status == self.download_task.FAILED)
+
+    def can_lock(self):
+        """Return True, if episode can be locked.
+
+        gPodder.on_item_toggle_lock_activate() unlocks deleted episodes and toggles all others.
+        Locked episodes can always be unlocked.
+        """
+        return self.state != gpodder.STATE_DELETED or self.archive
+
     def check_is_new(self):
-        return (self.state == gpodder.STATE_NORMAL and self.is_new and
-                not self.downloading)
+        return (self.state == gpodder.STATE_NORMAL and self.is_new
+                and not self.downloading)
 
     def save(self):
         gpodder.user_extensions.on_episode_save(self)
@@ -500,15 +589,26 @@ class PodcastEpisode(PodcastModelObject):
 
     age_prop = property(fget=get_age_string)
 
+    def cache_text_description(self):
+        if self.description:
+            self._text_description = self.description
+        elif self.description_html:
+            self._text_description = util.remove_html_tags(self.description_html)
+        else:
+            self._text_description = ''
+
+    def html_description(self):
+        return self.description_html \
+            or util.nice_html_description(self.episode_art_url, self.description or _('No description available'))
+
     def one_line_description(self):
         MAX_LINE_LENGTH = 120
-        desc = util.remove_html_tags(self.description or '')
+        desc = self._text_description
         desc = re.sub(r'\s+', ' ', desc).strip()
         if not desc:
             return _('No description available')
         else:
-            # Decode the description to avoid gPodder bug 1277
-            desc = util.convert_bytes(desc).strip()
+            desc = desc.strip()
 
             if len(desc) > MAX_LINE_LENGTH:
                 return desc[:MAX_LINE_LENGTH] + '...'
@@ -525,7 +625,7 @@ class PodcastEpisode(PodcastModelObject):
         self.set_state(gpodder.STATE_DELETED)
 
     def get_playback_url(self, config=None, allow_partial=False):
-        """Local (or remote) playback/streaming filename/URL
+        """Local (or remote) playback/streaming filename/URL.
 
         Returns either the local filename or a streaming URL that
         can be used to playback this episode.
@@ -533,11 +633,10 @@ class PodcastEpisode(PodcastModelObject):
         Also returns the filename of a partially downloaded file
         in case partial (preview) playback is desired.
         """
-        url = self.local_filename(create=False)
+        if (allow_partial and self.can_preview()):
+            return self.download_task.custom_downloader.partial_filename
 
-        if (allow_partial and url is not None and
-                os.path.exists(url + '.partial')):
-            return url + '.partial'
+        url = self.local_filename(create=False)
 
         if url is None or not os.path.exists(url):
             # FIXME: may custom downloaders provide the real url ?
@@ -549,13 +648,13 @@ class PodcastEpisode(PodcastModelObject):
         filename = filename.strip('.' + string.whitespace) + extension
 
         for name in util.generate_names(filename):
-            if (not self.db.episode_filename_exists(self.podcast_id, name) or
-                    self.download_filename == name):
+            if (not self.db.episode_filename_exists(self.podcast_id, name)
+                    or self.download_filename == name):
                 return name
 
     def local_filename(self, create, force_update=False, check_only=False,
             template=None, return_wanted_filename=False):
-        """Get (and possibly generate) the local saving filename
+        """Get (and possibly generate) the local saving filename.
 
         Pass create=True if you want this function to generate a
         new filename if none exists. You only want to do this when
@@ -594,7 +693,7 @@ class PodcastEpisode(PodcastModelObject):
         if not check_only and (force_update or not self.download_filename):
             # Avoid and catch gPodder bug 1440 and similar situations
             if template == '':
-                logger.warn('Empty template. Report this podcast URL %s',
+                logger.warning('Empty template. Report this podcast URL %s',
                         self.channel.url)
                 template = None
 
@@ -607,15 +706,15 @@ class PodcastEpisode(PodcastModelObject):
 
             if 'redirect' in episode_filename and template is None:
                 # This looks like a redirection URL - force URL resolving!
-                logger.warn('Looks like a redirection to me: %s', self.url)
+                logger.warning('Looks like a redirection to me: %s', self.url)
                 url = util.get_real_url(self.channel.authenticate_url(self.url))
                 logger.info('Redirection resolved to: %s', url)
                 episode_filename, _ = util.filename_from_url(url)
 
             # Use title for YouTube, Vimeo and Soundcloud downloads
-            if (youtube.is_video_link(self.url) or
-                    vimeo.is_video_link(self.url) or
-                    episode_filename == 'stream'):
+            if (youtube.is_video_link(self.url)
+                    or vimeo.is_video_link(self.url)
+                    or episode_filename == 'stream'):
                 episode_filename = self.title
 
             # If the basename is empty, use the md5 hexdigest of the URL
@@ -650,7 +749,7 @@ class PodcastEpisode(PodcastModelObject):
                     # call it from the downloading code before saving the file
                     logger.info('Choosing new filename: %s', new_file_name)
                 else:
-                    logger.warn('%s exists or %s does not', new_file_name, old_file_name)
+                    logger.warning('%s exists or %s does not', new_file_name, old_file_name)
                 logger.info('Updating filename of %s to "%s".', self.url, wanted_filename)
             elif self.download_filename is None:
                 logger.info('Setting download filename: %s', wanted_filename)
@@ -695,12 +794,15 @@ class PodcastEpisode(PodcastModelObject):
             return False
         return True
 
-    def sync_filename(self, use_custom=False, custom_format=None):
-        if use_custom:
+    def sync_filename(self, use_custom=False, custom_format=None, use_title=False):
+        if use_custom and custom_format:
             return util.object_string_formatter(custom_format,
                     episode=self, podcast=self.channel)
-        else:
+        elif use_title:
             return self.title
+        else:
+            # use same filename as on local
+            return str(self.download_filename).strip(self.extension())
 
     def file_type(self):
         # Assume all YouTube/Vimeo links are video files
@@ -715,17 +817,11 @@ class PodcastEpisode(PodcastModelObject):
 
     @property
     def pubtime(self):
-        """
-        Returns published time as HHMM (or 0000 if not available)
-        """
-        try:
-            return datetime.datetime.fromtimestamp(self.published).strftime('%H%M')
-        except:
-            logger.warn('Cannot format pubtime: %s', self.title, exc_info=True)
-            return '0000'
+        """Return published time as HHMM (or 0000 if not available)."""
+        return self.published_formatted('%H%M', '0000')
 
     def playlist_title(self):
-        """Return a title for this episode in a playlist
+        """Return a title for this episode in a playlist.
 
         The title will be composed of the podcast name, the
         episode name and the publication date. The return
@@ -736,45 +832,67 @@ class PodcastEpisode(PodcastModelObject):
                 self.title,
                 self.cute_pubdate())
 
-    def cute_pubdate(self):
+    def cute_pubdate(self, show_time=False):
         result = util.format_date(self.published)
         if result is None:
             return '(%s)' % _('unknown')
-        else:
+
+        try:
+            if show_time:
+                timestamp = datetime.datetime.fromtimestamp(self.published)
+                return '<small>{}</small>\n{}'.format(timestamp.strftime('%H:%M'), result)
+            else:
+                return result
+        except (OSError, TypeError, ValueError):
+            # Not likely: util.format_date has succeeded
             return result
 
     pubdate_prop = property(fget=cute_pubdate)
 
-    def published_datetime(self):
-        return datetime.datetime.fromtimestamp(self.published)
+    def published_formatted(self, fmt, default):
+        """Safe method to convert self.published to a string.
+
+        fmt: anything accepted by datetime.datetime.strftime
+        default: string to return when self.published is invalid
+        """
+        try:
+            d = datetime.datetime.fromtimestamp(self.published)
+            return d.strftime(fmt)
+        except (OSError, TypeError, ValueError):
+            logger.warning('Cannot compute published_datetime %r' % self.published, exc_info=True)
+            return default
 
     @property
     def sortdate(self):
-        return self.published_datetime().strftime('%Y-%m-%d')
+        return self.published_formatted('%Y-%m-%d', '0000-00-00')
 
     @property
     def pubdate_day(self):
-        return self.published_datetime().strftime('%d')
+        """For custom sync filename: use episode.pubdate_day for day of publication (01-31)."""
+        return self.published_formatted('%d', '00')
 
     @property
     def pubdate_month(self):
-        return self.published_datetime().strftime('%m')
+        """For custom filename: use episode.pubdate_month for month of publication (01-12)."""
+        return self.published_formatted('%m', '00')
 
     @property
     def pubdate_year(self):
-        return self.published_datetime().strftime('%y')
+        """For custom filename: use episode.pubdate_year for year of publication without century)."""
+        return self.published_formatted('%y', '00')
 
     def is_finished(self):
-        """Return True if this episode is considered "finished playing"
+        """Return True if this episode is considered "finished playing".
 
         An episode is considered "finished" when there is a
         current position mark on the track, and when the
         current position is greater than 99 percent of the
         total time or inside the last 10 seconds of a track.
         """
-        return (self.current_position > 0 and self.total_time > 0 and
-                (self.current_position + 10 >= self.total_time or
-                 self.current_position >= self.total_time * .99))
+        return (self.current_position > 0
+                and self.total_time > 0
+                and (self.current_position + 10 >= self.total_time
+                or self.current_position >= self.total_time * .99))
 
     def get_play_info_string(self, duration_only=False):
         duration = util.format_time(self.total_time)
@@ -792,7 +910,8 @@ class PodcastEpisode(PodcastModelObject):
             return '-'
 
     def update_from(self, episode):
-        for k in ('title', 'url', 'description', 'description_html', 'link', 'published', 'guid', 'payment_url'):
+        for k in ('title', 'url', 'episode_art_url', 'description', 'description_html', 'chapters', 'link',
+                  'published', 'guid', 'payment_url'):
             setattr(self, k, getattr(episode, k))
         # Don't overwrite file size on downloaded episodes
         # See #648 refreshing a youtube podcast clears downloaded file size
@@ -821,11 +940,11 @@ class PodcastChannel(PodcastModelObject):
 
     feed_fetcher = gPodderFetcher()
 
-    def __init__(self, model, id=None):
+    def __init__(self, model, channel_id=None):
         self.parent = model
         self.children = []
 
-        self.id = id
+        self.id = channel_id
         self.url = None
         self.title = ''
         self.link = ''
@@ -876,7 +995,7 @@ class PodcastChannel(PodcastModelObject):
             logger.debug('Strategy for %s changed to %s', self.title, caption)
             self.download_strategy = download_strategy
         else:
-            logger.warn('Cannot set strategy to %d', download_strategy)
+            logger.warning('Cannot set strategy to %d', download_strategy)
 
     def rewrite_url(self, new_url):
         new_url = util.normalize_feed_url(new_url)
@@ -890,7 +1009,7 @@ class PodcastChannel(PodcastModelObject):
         return new_url
 
     def check_download_folder(self):
-        """Check the download folder for externally-downloaded files
+        """Check the download folder for externally-downloaded files.
 
         This will try to assign downloaded files with episodes in the
         database.
@@ -915,15 +1034,18 @@ class PodcastChannel(PodcastModelObject):
 
                 known_files.add(filename)
 
-        existing_files = set(filename for filename in
-                glob.glob(os.path.join(self.save_dir, '*'))
-                if not filename.endswith('.partial'))
+        # youtube-dl and yt-dlp create <name>.partial and <name>.partial.<ext> files while downloading.
+        # On startup, the latter is reported as an unknown external file.
+        # Both files are properly removed when the download completes.
+        existing_files = {filename
+                for filename in glob.glob(os.path.join(self.save_dir, '*'))
+                if not filename.endswith('.partial')}
 
         ignore_files = ['folder' + ext for ext in
                 coverart.CoverDownloader.EXTENSIONS]
 
-        external_files = existing_files.difference(list(known_files) +
-                [os.path.join(self.save_dir, ignore_file)
+        external_files = existing_files.difference(list(known_files)
+                + [os.path.join(self.save_dir, ignore_file)
                  for ignore_file in ignore_files])
         if not external_files:
             return
@@ -970,7 +1092,7 @@ class PodcastChannel(PodcastModelObject):
                         break
 
             if not found and not util.is_system_file(filename):
-                logger.warn('Unknown external file: %s', filename)
+                logger.warning('Unknown external file: %s', filename)
 
     @classmethod
     def sort_key(cls, podcast):
@@ -997,7 +1119,7 @@ class PodcastChannel(PodcastModelObject):
 
             try:
                 tmp.update(max_episodes)
-            except Exception as e:
+            except Exception:
                 logger.debug('Fetch failed. Removing buggy feed.')
                 tmp.remove_downloaded()
                 tmp.delete()
@@ -1022,14 +1144,17 @@ class PodcastChannel(PodcastModelObject):
             return tmp
 
     def episode_factory(self, d):
-        """
+        """Create a PodcastEpisode from a dict.
+
         This function takes a dictionary containing key-value pairs for
         episodes and returns a new PodcastEpisode object that is connected
         to this object.
 
         Returns: A new PodcastEpisode object
         """
-        return self.EpisodeClass.create_from_dict(d, self)
+        episode = self.EpisodeClass.create_from_dict(d, self)
+        episode.cache_text_description()
+        return episode
 
     def _consume_updated_title(self, new_title):
         # Replace multi-space and newlines with single space (Maemo bug 11173)
@@ -1117,7 +1242,7 @@ class PodcastChannel(PodcastModelObject):
                 next_feed = None
 
         # mark episodes not new
-        real_new_episode_count = 0
+        real_new_episodes = []
         # Search all entries for new episodes
         for episode in new_episodes:
             # Workaround for bug 340: If the episode has been
@@ -1129,17 +1254,18 @@ class PodcastChannel(PodcastModelObject):
                 episode.save()
 
             if episode.is_new:
-                real_new_episode_count += 1
+                real_new_episodes.append(episode)
 
             # Only allow a certain number of new episodes per update
-            if (self.download_strategy == PodcastChannel.STRATEGY_LATEST and
-                    real_new_episode_count > 1):
+            if (self.download_strategy == PodcastChannel.STRATEGY_LATEST
+                    and len(real_new_episodes) > 1):
                 episode.is_new = False
                 episode.save()
 
         self.children.extend(new_episodes)
 
         self.remove_unreachable_episodes(existing, seen_guids, max_episodes)
+        return real_new_episodes
 
     def remove_unreachable_episodes(self, existing, seen_guids, max_episodes):
         # Remove "unreachable" episodes - episodes that have not been
@@ -1147,8 +1273,8 @@ class PodcastChannel(PodcastModelObject):
         # Keep episodes that are currently being downloaded, though (bug 1534)
         if self.id is not None:
             episodes_to_purge = [e for e in existing if
-                    e.state != gpodder.STATE_DOWNLOADED and
-                    e.guid not in seen_guids and not e.downloading]
+                    e.state != gpodder.STATE_DOWNLOADED
+                    and e.guid not in seen_guids and not e.downloading]
 
             for episode in episodes_to_purge:
                 logger.debug('Episode removed from feed: %s (%s)',
@@ -1161,8 +1287,8 @@ class PodcastChannel(PodcastModelObject):
                     self.children.remove(episode)
 
         # This *might* cause episodes to be skipped if there were more than
-        # max_episodes_per_feed items added to the feed between updates.
-        # The benefit is that it prevents old episodes from apearing as new
+        # limit.episodes items added to the feed between updates.
+        # The benefit is that it prevents old episodes from appearing as new
         # in certain situations (see bug #340).
         self.db.purge(max_episodes, self.id)  # TODO: Remove from self.children!
 
@@ -1171,21 +1297,22 @@ class PodcastChannel(PodcastModelObject):
 
     def update(self, max_episodes=0):
         max_episodes = int(max_episodes)
+        new_episodes = []
         try:
             result = self.feed_fetcher.fetch_channel(self, max_episodes)
 
             if result.status == feedcore.UPDATED_FEED:
-                self._consume_updated_feed(result.feed, max_episodes)
+                new_episodes = self._consume_updated_feed(result.feed, max_episodes)
             elif result.status == feedcore.NEW_LOCATION:
                 # FIXME: could return the feed because in autodiscovery it is parsed already
                 url = result.feed
                 logger.info('New feed location: %s => %s', self.url, url)
-                if url in set(x.url for x in self.model.get_podcasts()):
+                if url in {x.url for x in self.model.get_podcasts()}:
                     raise Exception('Already subscribed to ' + url)
                 self.url = url
                 # With the updated URL, fetch the feed again
                 self.update(max_episodes)
-                return
+                return new_episodes
             elif result.status == feedcore.NOT_MODIFIED:
                 pass
 
@@ -1212,6 +1339,7 @@ class PodcastChannel(PodcastModelObject):
         self._determine_common_prefix()
 
         self.db.commit()
+        return new_episodes
 
     def delete(self):
         self.db.delete_podcast(self)
@@ -1319,8 +1447,8 @@ class PodcastChannel(PodcastModelObject):
         download_folder = download_folder.strip('.' + string.whitespace)
 
         for folder_name in util.generate_names(download_folder):
-            if (not self.db.podcast_download_folder_exists(folder_name) or
-                    self.download_folder == folder_name):
+            if (not self.db.podcast_download_folder_exists(folder_name)
+                    or self.download_folder == folder_name):
                 return folder_name
 
     def get_save_dir(self, force_new=False):
@@ -1421,9 +1549,9 @@ class Model(object):
 
     @classmethod
     def sort_episodes_by_pubdate(cls, episodes, reverse=False):
-        """Sort a list of PodcastEpisode objects chronologically
+        """Sort a list of PodcastEpisode objects chronologically.
 
-        Returns a iterable, sorted sequence of the episodes
+        Returns a iterable, sorted sequence of the episodes.
         """
         return sorted(episodes, key=cls.episode_sort_key, reverse=reverse)
 
@@ -1438,4 +1566,51 @@ def check_root_folder_path():
             return _("Warning: path to gPodder home (%(root)s) is very long "
                      "and can result in failure to download files.\n" % {"root": root}) \
                 + _("You're advised to set it to a shorter path.")
+    return None
+
+
+def episode_object_by_uri(channels, uri):
+    """Get an episode object given a local or remote URI.
+
+    This can be used to quickly access an episode object
+    when all we have is its download filename or episode
+    URL (e.g. from external D-Bus calls / signals, etc..)
+    """
+    if uri.startswith('/'):
+        uri = 'file://' + urllib.parse.quote(uri)
+
+    prefix = 'file://' + urllib.parse.quote(gpodder.downloads)
+
+    if uri.startswith(prefix):
+        # File is on the local filesystem in the download folder
+        # Try to reduce search space by pre-selecting the channel
+        # based on the folder name of the local file
+
+        filename = urllib.parse.unquote(uri[len(prefix):])
+        file_parts = [_f for _f in filename.split(os.sep) if _f]
+
+        if len(file_parts) != 2:
+            return None
+
+        foldername, filename = file_parts
+
+        def is_channel(c):
+            return c.download_folder == foldername
+
+        def is_episode(e):
+            return e.download_filename == filename
+    else:
+        # By default, assume we can't pre-select any channel
+        # but can match episodes simply via the download URL
+        def is_channel(c):
+            return True
+
+        def is_episode(e):
+            return e.url == uri
+
+    # Deep search through channels and episodes for a match
+    for channel in filter(is_channel, channels):
+        for episode in filter(is_episode, channel.get_all_episodes()):
+            return episode
+
     return None

@@ -28,7 +28,7 @@ N_ = gpodder.ngettext
 
 
 class gPodderEpisodeSelector(BuilderWidget):
-    """Episode selection dialog
+    """Episode selection dialog.
 
     Optional keyword arguments that modify the behaviour of this dialog:
 
@@ -40,7 +40,7 @@ class gPodderEpisodeSelector(BuilderWidget):
       - remove_action: Label for the "remove" action (default is "Remove")
       - remove_finished: Callback after all remove callbacks have finished
                          (default is None, also depends on remove_callback)
-                         It will get a list of episode URLs that have been
+                         It will get a list of episodes that have been
                          removed, so the main UI can update those
       - episodes: List of episodes that are presented for selection
       - selected: (optional) List of boolean variables that define the
@@ -80,6 +80,7 @@ class gPodderEpisodeSelector(BuilderWidget):
                            the text for the tooltips when hovering
                            over an episode (default is 'description')
     """
+
     COLUMN_INDEX = 0
     COLUMN_TOOLTIP = 1
     COLUMN_TOGGLE = 2
@@ -111,7 +112,7 @@ class gPodderEpisodeSelector(BuilderWidget):
             self.size_attribute = 'file_size'
 
         if not hasattr(self, 'tooltip_attribute'):
-            self.tooltip_attribute = 'description'
+            self.tooltip_attribute = '_text_description'
 
         if not hasattr(self, 'selection_buttons'):
             self.selection_buttons = {}
@@ -245,9 +246,9 @@ class gPodderEpisodeSelector(BuilderWidget):
 
         if path is not None:
             model = treeview.get_model()
-            iter = model.get_iter(path)
-            index = model.get_value(iter, self.COLUMN_INDEX)
-            description = model.get_value(iter, self.COLUMN_TOOLTIP)
+            iterator = model.get_iter(path)
+            index = model.get_value(iterator, self.COLUMN_INDEX)
+            description = model.get_value(iterator, self.COLUMN_TOOLTIP)
             if self.last_tooltip_episode is not None and self.last_tooltip_episode != index:
                 self.last_tooltip_episode = None
                 return False
@@ -367,13 +368,11 @@ class gPodderEpisodeSelector(BuilderWidget):
     def on_remove_action_activate(self, widget):
         episodes = self.get_selected_episodes(remove_episodes=True)
 
-        urls = []
         for episode in episodes:
-            urls.append(episode.url)
             self.remove_callback(episode)
 
         if self.remove_finished is not None:
-            self.remove_finished(urls)
+            self.remove_finished(episodes)
         self.calculate_total_size()
 
         # Close the window when there are no episodes left
@@ -383,9 +382,9 @@ class gPodderEpisodeSelector(BuilderWidget):
 
     def on_row_activated(self, treeview, path, view_column):
         model = treeview.get_model()
-        iter = model.get_iter(path)
-        value = model.get_value(iter, self.COLUMN_TOGGLE)
-        model.set_value(iter, self.COLUMN_TOGGLE, not value)
+        iterator = model.get_iter(path)
+        value = model.get_value(iterator, self.COLUMN_TOGGLE)
+        model.set_value(iterator, self.COLUMN_TOGGLE, not value)
 
         self.calculate_total_size()
 
@@ -400,12 +399,12 @@ class gPodderEpisodeSelector(BuilderWidget):
         if remove_episodes:
             for episode in selected_episodes:
                 index = self.episodes.index(episode)
-                iter = self.model.get_iter_first()
-                while iter is not None:
-                    if self.model.get_value(iter, self.COLUMN_INDEX) == index:
-                        self.model.remove(iter)
+                iterator = self.model.get_iter_first()
+                while iterator is not None:
+                    if self.model.get_value(iterator, self.COLUMN_INDEX) == index:
+                        self.model.remove(iterator)
                         break
-                    iter = self.model.iter_next(iter)
+                    iterator = self.model.iter_next(iterator)
 
         return selected_episodes
 

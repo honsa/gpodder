@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
-"""
-UI Base Module for GtkBuilder
+"""UI Base Module for GtkBuilder.
 
 Based on SimpleGladeApp.py Copyright (C) 2004 Sandino Flores Moreno
 """
@@ -22,7 +21,6 @@ Based on SimpleGladeApp.py Copyright (C) 2004 Sandino Flores Moreno
 
 import os
 import re
-import sys
 import tokenize
 
 from gi.repository import Gtk
@@ -30,9 +28,7 @@ from gi.repository import Gtk
 
 class GtkBuilderWidget(object):
     def __init__(self, ui_folders, textdomain, parent, **kwargs):
-        """
-        Loads the UI file from the specified folder (with translations
-        from the textdomain) and initializes attributes.
+        """Load the UI file from the specified folders and initialize attributes.
 
         ui_folders:
             List of folders with GtkBuilder .ui files in search order
@@ -75,7 +71,7 @@ class GtkBuilderWidget(object):
         Convert widget names to attributes of this object.
 
         It means a widget named vbox-dialog in GtkBuilder
-        is refered using self.vbox_dialog in the code.
+        is referred using self.vbox_dialog in the code.
         """
         for widget in self.builder.get_objects():
             # Just to be safe - every widget from the builder is buildable
@@ -95,19 +91,18 @@ class GtkBuilderWidget(object):
 
     @property
     def main_window(self):
-        """Returns the main window of this GtkBuilderWidget"""
+        """Return the main window of this GtkBuilderWidget."""
         return getattr(self, self.__class__.__name__)
 
     def new(self):
-        """
-        Method called when the user interface is loaded and ready to be used.
-        At this moment, the widgets are loaded and can be refered as self.widget_name
-        """
-        pass
+        """Called when the user interface is loaded and ready to be used.
+
+        At this moment, the widgets are loaded and can be referred as self.widget_name
+        """  # noqa: D401
 
     def main(self):
-        """
-        Starts the main loop of processing events.
+        """Start the main loop of processing events.
+
         The default implementation calls Gtk.main()
 
         Useful for applications that needs a non gtk main loop.
@@ -119,22 +114,10 @@ class GtkBuilderWidget(object):
         """
         Gtk.main()
 
-    def quit(self):
-        """
-        Quit processing events.
-        The default implementation calls Gtk.main_quit()
-
-        Useful for applications that needs a non gtk main loop.
-        For example, applications based on gstreamer needs to override
-        this method with Gst.main_quit()
-        """
-        Gtk.main_quit()
-
     def run(self):
-        """
-        Starts the main loop of processing events checking for Control-C.
+        """Start the main loop of processing events checking for Control-C.
 
-        The default implementation checks wheter a Control-C is pressed,
+        The default implementation checks whether a Control-C is pressed,
         then calls on_keyboard_interrupt().
 
         Use this method for starting programs.
@@ -145,8 +128,4 @@ class GtkBuilderWidget(object):
             self.on_keyboard_interrupt()
 
     def on_keyboard_interrupt(self):
-        """
-        This method is called by the default implementation of run()
-        after a program is finished by pressing Control-C.
-        """
-        pass
+        """Called by the default implementation of run() after pressing Control-C."""  # noqa: D401

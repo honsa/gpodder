@@ -22,7 +22,6 @@ __title__ = _('Normalize audio with re-encoding')
 __description__ = _('Normalize the volume of audio files with normalize-audio')
 __authors__ = 'Bernd Schlapsi <brot@gmx.info>'
 __doc__ = 'https://gpodder.github.io/docs/extensions/normalizeaudio.html'
-__payment__ = 'https://flattr.com/submit/auto?user_id=BerndSch&url=http://wiki.gpodder.org/wiki/Extensions/NormalizeAudio'
 __category__ = 'post-download'
 
 
@@ -47,7 +46,7 @@ class gPodderExtension:
         # Dependency check
         self.container.require_command('normalize-ogg')
         self.container.require_command('normalize-mp3')
-        self.container.require_command('normalize-audio')
+        self.command = self.container.require_any_command(['normalize', 'normalize-audio'])
 
     def on_load(self):
         logger.info('Extension "%s" is being loaded.' % __title__)
@@ -89,15 +88,16 @@ class gPodderExtension:
 
         basename, extension = os.path.splitext(filename)
 
-        cmd = [CONVERT_COMMANDS.get(extension, 'normalize-audio'), filename]
+        cmd = [CONVERT_COMMANDS.get(extension, self.command), filename]
 
+        # Set cwd to prevent normalize from placing files in the directory gpodder was started from.
         if gpodder.ui.win32:
-            p = util.Popen(cmd)
+            p = util.Popen(cmd, cwd=episode.channel.save_dir)
             p.wait()
             stdout, stderr = ("<unavailable>",) * 2
         else:
-            p = util.Popen(cmd, stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE)
+            p = util.Popen(cmd, cwd=episode.channel.save_dir,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             stdout, stderr = p.communicate()
 
         if p.returncode == 0:
@@ -105,7 +105,7 @@ class gPodderExtension:
             gpodder.user_extensions.on_notification_show(_('File normalized'),
                     episode.title)
         else:
-            logger.warn('normalize-audio failed: %s / %s', stdout, stderr)
+            logger.warning('normalize-audio failed: %s / %s', stdout, stderr)
 
     def convert_episodes(self, episodes):
         for episode in episodes:

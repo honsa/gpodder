@@ -17,12 +17,12 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
 
-# This metadata block gets parsed by setup.py - use single quotes only
+# This metadata block gets parsed by setup.py and pyproject.toml - use single quotes only
 __tagline__ = 'Media aggregator and podcast client'
 __author__ = 'Thomas Perl <thp@gpodder.org>'
-__version__ = '3.10.21'
-__date__ = '2021-07-19'
-__copyright__ = '© 2005-2021 The gPodder Team'
+__version__ = '3.11.5'
+__date__ = '2024-12-17'
+__copyright__ = '© 2005-2024 The gPodder Team'
 __license__ = 'GNU General Public License, version 3 or later'
 __url__ = 'http://gpodder.org/'
 
@@ -49,10 +49,7 @@ except ImportError:
          The podcastparser module can be downloaded from
          http://gpodder.org/podcastparser/
 
-  From a source checkout, you can download local copies of all
-  CLI dependencies for debugging (will be placed into "src/"):
-
-      python3 tools/localdepends.py
+  From a source checkout, see https://gpodder.github.io/docs/run-from-git.html
 """)
     sys.exit(1)
 del podcastparser
@@ -65,10 +62,7 @@ except ImportError:
          The mygpoclient module can be downloaded from
          http://gpodder.org/mygpoclient/
 
-  From a source checkout, you can download local copies of all
-  CLI dependencies for debugging (will be placed into "src/"):
-
-      python3 tools/localdepends.py
+  From a source checkout, see https://gpodder.github.io/docs/run-from-git.html
 """)
     sys.exit(1)
 del mygpoclient
@@ -105,9 +99,8 @@ class UI(object):
 ui = UI()
 
 # D-Bus specific interface names
-dbus_bus_name = 'org.gpodder'
-dbus_gui_object_path = '/gui'
-dbus_podcasts_object_path = '/podcasts'
+dbus_bus_name = 'org.gpodder.gpodder'
+dbus_default_object_path = '/org/gpodder/gpodder'
 dbus_interface = 'org.gpodder.interface'
 dbus_podcasts = 'org.gpodder.podcasts'
 dbus_session_bus = None
@@ -221,14 +214,14 @@ def fixup_home(old_home):
 # Default locations for configuration and data files
 default_home = os.path.expanduser(os.path.join('~', 'gPodder'))
 default_home = fixup_home(default_home)
-set_home(os.environ.get(ENV_HOME, default_home))
+set_home(os.path.expanduser(os.environ.get(ENV_HOME, default_home)))
 
 if home != default_home:
     print('Storing data in', home, '(GPODDER_HOME is set)', file=sys.stderr)
 
 if ENV_DOWNLOADS in os.environ:
     # Allow to relocate the downloads folder (pull request 4, bug 466)
-    downloads = os.environ[ENV_DOWNLOADS]
+    downloads = os.path.expanduser(os.environ[ENV_DOWNLOADS])
     print('Storing downloads in %s (%s is set)' % (downloads,
             ENV_DOWNLOADS), file=sys.stderr)
 
@@ -239,11 +232,12 @@ DEFAULT_PLUGINS = [
 
 
 def load_plugins():
-    """Load (non-essential) plugin modules
+    """Load (non-essential) plugin modules.
 
     This loads a default set of plugins, but you can use
     the environment variable "GPODDER_PLUGINS" to modify
-    the list of plugins."""
+    the list of plugins.
+    """
     PLUGINS = os.environ.get('GPODDER_PLUGINS', None)
     if PLUGINS is None:
         PLUGINS = DEFAULT_PLUGINS

@@ -18,25 +18,17 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
 
-import glob
 import os
-import re
 import sys
-from distutils.core import setup
+
+from setuptools import setup
 
 installing = ('install' in sys.argv and '--help' not in sys.argv)
 
-# distutils depends on setup.py beeing executed from the same dir.
+# setuptools depends on setup.py being executed from the same dir.
 # Most of our custom commands work either way, but this makes
 # it work in all cases.
 os.chdir(os.path.dirname(os.path.realpath(__file__)))
-
-
-# Read the metadata from gPodder's __init__ module (doesn't need importing)
-main_module = open('src/gpodder/__init__.py', 'r', encoding='utf-8').read()
-metadata = dict(re.findall("__([a-z_]+)__\\s*=\\s*'([^']+)'", main_module))
-
-author, email = re.match(r'^(.*) <(.*)>$', metadata['author']).groups()
 
 
 class MissingFile(BaseException):
@@ -185,9 +177,9 @@ if uis is not None:
 
 
 try:
-    packages = list(sorted(find_packages(uis)))
-    scripts = list(sorted(find_scripts(uis)))
-    data_files = list(sorted(find_data_files(uis, scripts)))
+    packages = sorted(find_packages(uis))
+    scripts = sorted(find_scripts(uis))
+    data_files = sorted(find_data_files(uis, scripts))
 except MissingFile as mf:
     print("""
     Missing file: %s
@@ -199,15 +191,6 @@ except MissingFile as mf:
 
 
 setup(
-    name='gpodder',
-    version=metadata['version'],
-    description=metadata['tagline'],
-    license=metadata['license'],
-    url=metadata['url'],
-
-    author=author,
-    author_email=email,
-
     package_dir={'': 'src'},
     packages=packages,
     scripts=scripts,

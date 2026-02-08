@@ -6,7 +6,7 @@
             Media aggregator and podcast client
 ___
 
-Copyright  2005-2018 The gPodder Team
+Copyright  2005-2022 The gPodder Team
 
 
 ## License
@@ -26,18 +26,18 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 ## Dependencies
 
-- [Python 3.5](http://python.org/) or newer
+- [Python 3.8](http://python.org/) or newer
 - [Podcastparser](http://gpodder.org/podcastparser/) 0.6.0 or newer
 - [mygpoclient](http://gpodder.org/mygpoclient/) 1.7 or newer
 - [requests](https://requests.readthedocs.io) 2.24.0 or newer
-- Python D-Bus bindings
+- [dbus-python](http://dbus.freedesktop.org/doc/dbus-python/)
 
 As an alternative to python-dbus on Mac OS X and Windows, you can use
 the dummy (no-op) D-Bus module provided in "tools/fake-dbus-module/".
 
-For quick testing, you can use the script tools/localdepends.py to
-install local copies of podcastparser and mygpoclient into "src/" from
-PyPI. With this, you get a self-contained gPodder CLI codebase.
+For quick testing, see [Run from Git](
+https://gpodder.github.io/docs/run-from-git.html)
+to install dependencies.
 
 
 ### GTK3 UI - Additional Dependencies
@@ -52,22 +52,25 @@ PyPI. With this, you get a self-contained gPodder CLI codebase.
 - Size detection on Windows: PyWin32
 - Native OS X support: ige-mac-integration
 - MP3 Player Sync Support: python-eyed3 (0.7 or newer)
-- iPod Sync Support: python-gpod
+- iPod Sync Support: libgpod (tested with 0.8.3)
 - Clickable links in GTK UI show notes: html5lib
 - HTML show notes: WebKit2 gobject bindings
     (webkit2gtk, webkitgtk4 or gir1.2-webkit2-4.0 packages).
-- Better Youtube support (> 15 entries in feeds, download audio-only): youtube_dl or yt-dlp
+- Better Youtube support (> 15 entries in feeds, download audio-only):
+    youtube_dl or yt-dlp
 
 
 ### Build Dependencies
 
+- [build](https://github.com/pypa/build/) only if using `make buildwheel` or
+    `make install`
+- [installer](https://github.com/pypa/installer/) only if using `make install`
 - help2man
 - intltool
 
 
 ### Test Dependencies
 
-- python-minimock
 - pytest
 - pytest-httpserver
 - pytest-cov
@@ -133,13 +136,14 @@ into an alternative root (default /) and prefix (default /usr):
 
     make install DESTDIR=tmp/ PREFIX=/usr/local/
 
-[*Debian*](https://wiki.debian.org/Python#Deviations_from_upstream) and *Ubuntu* use `dist-packages`
-instead of `site-packages` for third party installs, so you'll want something like:
+[*Debian*](https://wiki.debian.org/Python#Deviations_from_upstream) and *Ubuntu*
+use `dist-packages` instead of `site-packages` for third party installs, so
+you'll want something like:
 
-    sudo python3 setup.py install --root / --prefix /usr/local --optimize=1 --install-lib=/usr/local/lib/python3.5/dist-packages
+    sudo python3 setup.py install --root / --prefix /usr/local --optimize=1 --install-lib=/usr/local/lib/python3.10/dist-packages
 
-In fact, first try running `python -c "import sys; print(sys.path)"` to check what is the exact path.
-It depends on your version of python.
+In fact, first try running `python -c "import sys; print(sys.path)"` to check
+what is the exact path.  It depends on your version of python.
 
 ## Portable Mode / Roaming Profiles
 
@@ -154,8 +158,10 @@ download directory directly on a MP3 player or USB disk:
 
 ## OS X Specific Notes
 
-- default GPODDER_HOME="$HOME/Library/Application Support/gPodder"
-- default GPODDER_DOWNLOAD_DIR="$HOME/Library/Application Support/gPodder/download"
+Default directories:
+
+ - GPODDER_HOME="$HOME/Library/Application Support/gPodder"
+ - GPODDER_DOWNLOAD_DIR="$HOME/Library/Application Support/gPodder/download"
 
 These settings may be modified by editing the following file of the .app :
 

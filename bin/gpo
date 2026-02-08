@@ -88,6 +88,7 @@ import pydoc
 import re
 import shlex
 import sys
+import textwrap
 import threading
 
 try:
@@ -215,9 +216,14 @@ class gPodderCli(object):
             self._extensions_podcast_update_cb,
             self._extensions_episode_download_cb)
 
+        observer = gpodder.config.get_network_proxy_observer(self._config)
+        self._config.add_observer(observer)
+        # Trigger the global gpodder.config._proxies observer contraption to initialize it.
+        observer("network.", None, None)
+
     @contextlib.contextmanager
-    def _action(self, msg, *args):
-        self._start_action(msg, *args)
+    def _action(self, msg):
+        self._start_action(msg)
         try:
             yield
             self._finish_action()
@@ -271,8 +277,8 @@ class gPodderCli(object):
         self._info(_('Episode download requested by extensions.'))
         self._download_episode(episode)
 
-    def _start_action(self, msg, *args):
-        line = util.convert_bytes(msg % args)
+    def _start_action(self, msg):
+        line = util.convert_bytes(msg)
         if len(line) > self.COLUMNS - 7:
             line = line[:self.COLUMNS - 7 - 3] + '...'
         else:
@@ -307,7 +313,7 @@ class gPodderCli(object):
 
     def import_(self, url):
         for channel in opml.Importer(url).items:
-            self.subscribe(channel['url'], channel.get('title'))
+            self.subscribe(channel['url'], channel.get('title'), channel.get('section'))
 
     def export(self, filename):
         podcasts = self._model.get_podcasts()
@@ -335,7 +341,7 @@ class gPodderCli(object):
                     return self._model.load_podcast(
                         url, create=True,
                         authentication_tokens=auth_tokens.get(url, None),
-                        max_episodes=self._config.max_episodes_per_feed)
+                        max_episodes=self._config.limit.episodes)
                 except feedcore.AuthenticationRequired as e:
                     if e.url in auth_tokens:
                         print(inred(_('Wrong username/password')))
@@ -363,7 +369,7 @@ class gPodderCli(object):
             self._error(_('You are not subscribed to %s.') % url)
         return None
 
-    def subscribe(self, url, title=None):
+    def subscribe(self, url, title=None, section=None):
         existing = self.get_podcast(url, check_only=True)
         if existing is not None:
             self._error(_('Already subscribed to %s.') % existing.url)
@@ -379,7 +385,7 @@ class gPodderCli(object):
                 podcast.rename(title)
             podcast.save()
         except Exception as e:
-            logger.warn('Cannot subscribe: %s', e, exc_info=True)
+            logger.warning('Cannot subscribe: %s', e, exc_info=True)
             if hasattr(e, 'strerror'):
                 self._error(e.strerror)
             else:
@@ -438,9 +444,19 @@ class gPodderCli(object):
         if podcast is None:
             self._error(_('You are not subscribed to %s.') % url)
         else:
+            # Clean up downloads and download directories
+            common.clean_up_downloads()
+
             podcast.delete()
             self._db.commit()
             self._error(_('Unsubscribed from %s.') % url)
+
+            # Delete downloaded episodes
+            podcast.remove_downloaded()
+
+            # TODO: subscribe and unsubscribe need to sync with mygpo
+            # Upload subscription list changes to the web service
+#            self.mygpo_client.on_unsubscribe([podcast.url])
 
         return True
 
@@ -481,13 +497,18 @@ class gPodderCli(object):
                     return "disabled"
                 return "enabled"
 
-            title, url, status = podcast.title, podcast.url, \
-                feed_update_status_msg(podcast)
+            title, url, description, link, status = (
+                podcast.title, podcast.url, podcast.description, podcast.link,
+                feed_update_status_msg(podcast))
+            description = '\n'.join(textwrap.wrap(description, subsequent_indent=' ' * 8))
             episodes = self._episodesList(podcast)
             episodes = '\n      '.join(episodes)
             self._pager("""
     Title: %(title)s
     URL: %(url)s
+    Description:
+        %(description)s
+    Link: %(link)s
     Feed update is %(status)s
 
     Episodes:
@@ -543,7 +564,7 @@ class gPodderCli(object):
         return True
 
     def _update_podcast(self, podcast):
-        with self._action(' %s', podcast.title):
+        with self._action(' %s' % podcast.title):
             podcast.update()
 
     def _pending_message(self, count):
@@ -614,12 +635,16 @@ class gPodderCli(object):
         common.find_partial_downloads(self._model.get_podcasts(),
                                       noop,
                                       noop,
+                                      noop,
                                       on_finish)
         return True
 
     def _download_episode(self, episode):
-        with self._action('Downloading %s', episode.title):
-            task = download.DownloadTask(episode, self._config)
+        with self._action('Downloading %s' % episode.title):
+            if episode.download_task is None:
+                task = download.DownloadTask(episode, self._config)
+            else:
+                task = episode.download_task
             task.add_progress_callback(self._update_action)
             task.status = download.DownloadTask.DOWNLOADING
             task.run()
@@ -631,6 +656,11 @@ class gPodderCli(object):
             episodes = list(model.Model.sort_episodes_by_pubdate(episodes))
 
         if episodes:
+            # Queue episodes to create partial files
+            for e in episodes:
+                if e.download_task is None:
+                    download.DownloadTask(e, self._config)
+
             last_podcast = None
             for episode in episodes:
                 if episode.channel != last_podcast:
@@ -663,6 +693,7 @@ class gPodderCli(object):
             self._download_episodes(episodes)
 
         common.find_partial_downloads(self._model.get_podcasts(),
+                                      noop,
                                       noop,
                                       noop,
                                       on_finish)
@@ -783,7 +814,7 @@ class gPodderCli(object):
 
             title, url = results[index - 1]
             self._info(_('Adding %s...') % title)
-            self.subscribe(url)
+            self.subscribe(url, title=title)
             if not multiple:
                 break
 
@@ -951,7 +982,7 @@ class gPodderCli(object):
             def queue_task(x, task):
                 def progress_updated(progress):
                     self._update_action(progress)
-                with self._action(_('Syncing %s'), ep_repr(task.episode)):
+                with self._action(_('Syncing %s') % ep_repr(task.episode)):
                     task.status = sync.SyncTask.DOWNLOADING
                     task.add_progress_callback(progress_updated)
                     task.run()
@@ -985,6 +1016,7 @@ class gPodderCli(object):
         done_lock.acquire()
         sync_ui.on_synchronize_episodes(self._model.get_podcasts(), episodes=None, force_played=True, done_callback=done_lock.release)
         done_lock.acquire()  # block until done
+        gpodder.user_extensions.on_all_episodes_synced()
 
     def _extensions_list(self):
         def by_category(ext):
@@ -1152,8 +1184,8 @@ class gPodderCli(object):
         defaults = defaults or ()
         minarg, maxarg = len(args) - len(defaults), len(args)
 
-        if (len(command_line) < minarg or
-                (len(command_line) > maxarg and varargs is None)):
+        if (len(command_line) < minarg
+                or (len(command_line) > maxarg and varargs is None)):
             self._error('Wrong argument count for %s.' % func.__name__)
             return False
 

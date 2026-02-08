@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 
 def clean_up_downloads(delete_partial=False):
-    """Clean up temporary files left behind by old gPodder versions
+    """Clean up temporary files left behind by old gPodder versions.
 
     delete_partial - If True, also delete in-progress downloads
     """
@@ -40,22 +40,22 @@ def clean_up_downloads(delete_partial=False):
 
     if delete_partial:
         temporary_files += glob.glob('%s/*/*.partial' % gpodder.downloads)
-        # YoutubeDL creates .partial.* files for adaptive formats
+        # youtube-dl creates .partial.* files for adaptive formats
         temporary_files += glob.glob('%s/*/*.partial.*' % gpodder.downloads)
 
     for tempfile in temporary_files:
         util.delete_file(tempfile)
 
 
-def find_partial_downloads(channels, start_progress_callback, progress_callback, finish_progress_callback):
-    """Find partial downloads and match them with episodes
+def find_partial_downloads(channels, start_progress_callback, progress_callback, final_progress_callback, finish_progress_callback):
+    """Find partial downloads and match them with episodes.
 
     channels - A list of all model.PodcastChannel objects
     start_progress_callback - A callback(count) when partial files are searched
     progress_callback - A callback(title, progress) when an episode was found
     finish_progress_callback - A callback(resumable_episodes) when finished
     """
-    # Look for partial file downloads, ignoring .partial.* files created by YoutubeDL
+    # Look for partial file downloads, ignoring .partial.* files created by youtube-dl
     partial_files = glob.glob(os.path.join(gpodder.downloads, '*', '*.partial'))
     count = len(partial_files)
     resumable_episodes = []
@@ -86,8 +86,10 @@ def find_partial_downloads(channels, start_progress_callback, progress_callback,
             if not candidates:
                 break
 
+        final_progress_callback()
+
         for f in partial_files:
-            logger.warn('Partial file without episode: %s', f)
+            logger.warning('Partial file without episode: %s', f)
             util.delete_file(f)
 
     # never delete partial: either we can't clean them up because we offer to
@@ -104,34 +106,34 @@ def get_expired_episodes(channels, config):
                 continue
 
             # Download strategy "Only keep latest"
-            if (channel.download_strategy == channel.STRATEGY_LATEST and
-                    index > 0):
+            if (channel.download_strategy == channel.STRATEGY_LATEST
+                    and index > 0):
                 logger.info('Removing episode (only keep latest strategy): %s',
                         episode.title)
                 yield episode
                 continue
 
             # Only expire episodes if the age in days is positive
-            if config.episode_old_age < 1:
+            if config.auto.cleanup.days < 1:
                 continue
 
             # Never consider fresh episodes as old
-            if episode.age_in_days() < config.episode_old_age:
+            if episode.age_in_days() < config.auto.cleanup.days:
                 continue
 
             # Do not delete played episodes (except if configured)
             if not episode.is_new:
-                if not config.auto_remove_played_episodes:
+                if not config.auto.cleanup.played:
                     continue
 
             # Do not delete unfinished episodes (except if configured)
             if not episode.is_finished():
-                if not config.auto_remove_unfinished_episodes:
+                if not config.auto.cleanup.unfinished:
                     continue
 
             # Do not delete unplayed episodes (except if configured)
             if episode.is_new:
-                if not config.auto_remove_unplayed_episodes:
+                if not config.auto.cleanup.unplayed:
                     continue
 
             yield episode

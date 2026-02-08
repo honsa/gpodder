@@ -27,15 +27,14 @@ import urllib.parse
 from html.parser import HTMLParser
 from io import BytesIO
 
-from requests.exceptions import RequestException
-
 from gpodder import util, youtube
 
 logger = logging.getLogger(__name__)
 
 
 class ExceptionWithData(Exception):
-    """Base exception with additional payload"""
+    """Base exception with additional payload."""
+
     def __init__(self, data):
         Exception.__init__(self)
         self.data = data
@@ -45,26 +44,33 @@ class ExceptionWithData(Exception):
 
 
 # Temporary errors
-class BadRequest(Exception): pass
+class BadRequest(Exception):
+    pass
 
 
-class InternalServerError(Exception): pass
+class InternalServerError(Exception):
+    pass
 
 
-class WifiLogin(ExceptionWithData): pass
+class WifiLogin(ExceptionWithData):
+    pass
 
 
 # Fatal errors
-class Unsubscribe(Exception): pass
+class Unsubscribe(Exception):
+    pass
 
 
-class NotFound(Exception): pass
+class NotFound(Exception):
+    pass
 
 
-class InvalidFeed(Exception): pass
+class InvalidFeed(Exception):
+    pass
 
 
-class UnknownStatusCode(ExceptionWithData): pass
+class UnknownStatusCode(ExceptionWithData):
+    pass
 
 
 # Authentication error
@@ -110,6 +116,12 @@ class FeedAutodiscovery(HTMLParser):
                 self._resolved_url = url
 
 
+class FetcherFeedData:
+    def __init__(self, text, content):
+        self.text = text
+        self.content = content
+
+
 class Fetcher(object):
     # Supported types, see http://feedvalidator.org/docs/warning/EncodingMismatch.html
     FEED_TYPES = ('application/rss+xml',
@@ -119,7 +131,7 @@ class Fetcher(object):
                   'text/xml')
 
     def _resolve_url(self, url):
-        """Provide additional ways of resolving an URL
+        """Provide additional ways of resolving an URL.
 
         Subclasses can override this method to provide more
         ways of resolving a given URL to a feed URL. If the
@@ -152,8 +164,9 @@ class Fetcher(object):
         else:
             raise UnknownStatusCode(status)
 
-    def parse_feed(self, url, data_stream, headers, status, **kwargs):
-        """
+    def parse_feed(self, url, feed_data, data_stream, headers, status, **kwargs):
+        """Parse feed.
+
         kwargs are passed from Fetcher.fetch
         :param str url: real url
         :param data_stream: file-like object to read from (bytes mode)
@@ -164,12 +177,12 @@ class Fetcher(object):
         raise NotImplementedError("Implement parse_feed()")
 
     def fetch(self, url, etag=None, modified=None, autodiscovery=True, **kwargs):
-        """ use kwargs to pass extra data to parse_feed in Fetcher subclasses """
+        """Use kwargs to pass extra data to parse_feed in Fetcher subclasses."""
         # handle local file first
         if url.startswith('file://'):
             url = url[len('file://'):]
             stream = open(url)
-            return self.parse_feed(url, stream, {}, UPDATED_FEED, **kwargs)
+            return self.parse_feed(url, None, stream, {}, UPDATED_FEED, **kwargs)
 
         # remote feed
         headers = {}
@@ -199,8 +212,8 @@ class Fetcher(object):
                 try:
                     self.fetch(ad._resolved_url, etag=None, modified=None, autodiscovery=False, **kwargs)
                     return Result(NEW_LOCATION, ad._resolved_url)
-                except Exception as e:
-                    logger.warn('Feed autodiscovery failed', exc_info=True)
+                except Exception:
+                    logger.warning('Feed autodiscovery failed', exc_info=True)
 
             # Second, try to resolve the URL
             new_url = self._resolve_url(url)
@@ -210,4 +223,5 @@ class Fetcher(object):
         # xml documents specify the encoding inline so better pass encoded body.
         # Especially since requests will use ISO-8859-1 for content-type 'text/xml'
         # if the server doesn't specify a charset.
-        return self.parse_feed(url, BytesIO(stream.content), stream.headers, UPDATED_FEED, **kwargs)
+        return self.parse_feed(url, FetcherFeedData(stream.text, stream.content), BytesIO(stream.content), stream.headers,
+                            UPDATED_FEED, **kwargs)

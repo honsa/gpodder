@@ -25,6 +25,8 @@
 
 import logging
 import os
+import shutil
+import urllib.parse
 
 import gpodder
 from gpodder import util, youtube
@@ -42,6 +44,7 @@ class CoverDownloader(object):
         '.jpg': lambda d: d.startswith(b'\xff\xd8'),
         '.gif': lambda d: d.startswith(b'GIF89a') or d.startswith(b'GIF87a'),
         '.ico': lambda d: d.startswith(b'\0\0\1\0'),
+        '.svg': lambda d: d.startswith(b'<svg '),
     }
 
     EXTENSIONS = list(SUPPORTED_EXTENSIONS.keys())
@@ -67,6 +70,31 @@ class CoverDownloader(object):
             if os.path.exists(filename + extension):
                 return filename + extension
 
+        # Handle local files
+        if cover_url is not None and cover_url.startswith('file://'):
+            try:
+                path = urllib.parse.unquote(cover_url).replace('file://', '')
+                if not os.path.exists(path):
+                    raise ValueError('Cover file not found: %s' % (path))
+
+                extension = None
+                with open(path, 'rb') as fp:
+                    data = fp.read(512)
+                    for filetype, check in list(self.SUPPORTED_EXTENSIONS.items()):
+                        if check(data):
+                            extension = filetype
+                            break
+                if extension is None:
+                    raise ValueError(
+                        'Unknown file type: %s (%r)' % (cover_url, data[:6]))
+
+                # File is ok, copy it
+                shutil.copyfile(path, filename + extension)
+                return filename + extension
+            except Exception as e:
+                logger.warning('Setting cover art from file failed: %s', e)
+                return self._fallback_filename(title)
+
         # If allowed to download files, do so here
         if download:
             # YouTube-specific cover art image resolver
@@ -91,7 +119,7 @@ class CoverDownloader(object):
                     raise ValueError(msg)
                 data = response.content
             except Exception as e:
-                logger.warn('Cover art download failed: %s', e)
+                logger.warning('Cover art download failed: %s', e)
                 return self._fallback_filename(title)
 
             try:
@@ -112,8 +140,8 @@ class CoverDownloader(object):
                 fp.close()
 
                 return filename + extension
-            except Exception as e:
-                logger.warn('Cannot save cover art', exc_info=True)
+            except Exception:
+                logger.warning('Cannot save cover art', exc_info=True)
 
         # Fallback to cover art based on the podcast title
         return self._fallback_filename(title)

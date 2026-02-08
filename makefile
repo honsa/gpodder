@@ -37,8 +37,8 @@ MOFILES = $(patsubst po/%.po,$(LOCALEDIR)/%/LC_MESSAGES/gpodder.mo, $(POFILES))
 UIFILES=$(wildcard share/gpodder/ui/gtk/*.ui)
 UIFILES_H=$(subst .ui,.ui.h,$(UIFILES))
 GETTEXT_SOURCE=$(wildcard src/gpodder/*.py \
-		          src/gpodder/gtkui/*.py \
-		          src/gpodder/gtkui/interface/*.py \
+			  src/gpodder/gtkui/*.py \
+			  src/gpodder/gtkui/interface/*.py \
 			  src/gpodder/gtkui/desktop/*.py \
 			  src/gpodder/plugins/*.py \
 			  share/gpodder/extensions/*.py)
@@ -53,7 +53,7 @@ PREFIX ?= /usr
 PYTHON ?= python3
 HELP2MAN ?= help2man
 
-PYTEST ?= $(shell which pytest || which pytest-3)
+PYTEST ?= $(shell command -v pytest || command -v pytest-3)
 
 ##########################################################################
 
@@ -66,18 +66,26 @@ unittest:
 	LC_ALL=C PYTHONPATH=src/ $(PYTEST) --ignore=tests --ignore=src/gpodder/utilwin32ctypes.py --doctest-modules src/gpodder/util.py src/gpodder/jsonconfig.py
 	LC_ALL=C PYTHONPATH=src/ $(PYTEST) tests --ignore=src/gpodder/utilwin32ctypes.py --ignore=src/mygpoclient --cov=gpodder
 
-ISORTOPTS := -c share src/gpodder tools bin/* *.py
+ISORTOPTS := -c share src/gpodder tools bin/* setup.py
 lint:
-	pycodestyle share src/gpodder tools bin/* *.py
+	flake8 --version
+	flake8 share src/gpodder tools bin setup.py || true
+
+	pycodestyle --version
+	pycodestyle share src/gpodder tools bin/* setup.py
+
+	isort --version
 	isort -q $(ISORTOPTS) || isort --df $(ISORTOPTS)
 
+	codespell --version
+	git ls-files | xargs codespell --quiet-level 3 --skip "./.git,*.po,.mypy_cache,./share/applications/gpodder.desktop" --
 
 release: distclean
-	$(PYTHON) setup.py sdist
+	$(PYTHON) -m build --sdist
 
 releasetest: unittest $(DESKTOP_FILES) $(POFILES)
-	for f in $(DESKTOP_FILES); do desktop-file-validate $$f; done
-	for f in $(POFILES); do msgfmt --check $$f; done
+	for f in $(DESKTOP_FILES); do desktop-file-validate $$f || exit 1; done
+	for f in $(POFILES); do msgfmt --check $$f || exit 1; done
 
 $(GPODDER_SERVICE_FILE): $(GPODDER_SERVICE_FILE_IN)
 	sed -e 's#__PREFIX__#$(PREFIX)#' $< >$@
@@ -90,11 +98,16 @@ $(GPODDER_SERVICE_FILE): $(GPODDER_SERVICE_FILE_IN)
 %.desktop.in.h: %.desktop.in
 	intltool-extract --quiet --type=gettext/ini $<
 
-install: messages $(GPODDER_SERVICE_FILE) $(DESKTOP_FILES)
-	$(PYTHON) setup.py install --root=$(DESTDIR) --prefix=$(PREFIX) --optimize=1
+build: messages $(GPODDER_SERVICE_FILE) $(DESKTOP_FILES)
 
-install-win: messages $(GPODDER_SERVICE_FILE) $(DESKTOP_FILES)
-	$(PYTHON) setup.py install
+buildwheel: build
+	$(PYTHON) -m build --wheel --no-isolation
+
+install: buildwheel
+	$(PYTHON) -m installer --destdir=$(DESTDIR) --prefix=$(PREFIX) dist/*.whl
+
+install-win: buildwheel
+	$(PYTHON) -m installer dist/*.whl
 
 ##########################################################################
 ifdef VERSION
@@ -112,10 +125,10 @@ endif
 manpages: $(MANPAGES)
 
 share/man/man1/gpodder.1: src/gpodder/__init__.py $(BINFILE)
-	LC_ALL=C $(HELP2MAN) --name="$(shell $(PYTHON) setup.py --description)" -N $(BINFILE) >$@
+	LC_ALL=C $(HELP2MAN) --name="$(shell $(PYTHON) -c 'import build.util; print(build.util.project_wheel_metadata(".")["Summary"])')" -N $(BINFILE) >$@
 
 share/man/man1/gpo.1: src/gpodder/__init__.py
-	sed -i 's/^\.TH.*/.TH GPO "1" "$(shell LANG=en date "+%B %Y")" "gpodder $(shell $(PYTHON) setup.py --version)" "User Commands"/' $@
+	sed -i 's/^\.TH.*/.TH GPO "1" "$(shell LANG=en date "+%B %Y")" "gpodder $(shell $(PYTHON) -c 'import build.util; print(build.util.project_wheel_metadata(".")["Version"])')" "User Commands"/' $@
 
 ##########################################################################
 
@@ -139,7 +152,6 @@ $(MESSAGES): $(GETTEXT_SOURCE)
 messages-force:
 	xgettext --from-code=utf-8 -LPython -k_:1 -kN_:1 -kN_:1,2 -kn_:1,2 -o $(MESSAGES)  $(GETTEXT_SOURCE)
 
-
 ##########################################################################
 
 # This only works in a Git working commit, and assumes that the local Git
@@ -161,14 +173,13 @@ clean:
 	rm -f $(GPODDER_SERVICE_FILE)
 	rm -f $(DESKTOP_FILES) $(DESKTOP_FILES_IN_H)
 	rm -rf build $(LOCALEDIR)
+	rm -rf src/gpodder.egg-info
 
 distclean: clean
 	rm -rf dist
 
 ##########################################################################
 
-.PHONY: help unittest release releasetest install manpages clean distclean messages headlink lint revbump
+.PHONY: help unittest release releasetest build install manpages clean distclean messages headlink lint revbump
 
 ##########################################################################
-
-

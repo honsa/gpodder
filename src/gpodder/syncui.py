@@ -22,7 +22,6 @@
 # Ported to gPodder 3 by Joseph Wickremasinghe in June 2012
 
 import logging
-import os
 
 import gpodder
 from gpodder import sync, util
@@ -67,7 +66,7 @@ class gPodderSyncUI(object):
         self.mount_volume_for_file = mount_volume_for_file
 
     def _filter_sync_episodes(self, channels, only_downloaded=False):
-        """Return a list of episodes for device synchronization
+        """Return a list of episodes for device synchronization.
 
         If only_downloaded is True, this will skip episodes that
         have not been downloaded yet and podcasts that are marked
@@ -80,8 +79,8 @@ class gPodderSyncUI(object):
                 continue
 
             for episode in channel.get_all_episodes():
-                if (episode.was_downloaded(and_exists=True) or
-                        not only_downloaded):
+                if (episode.was_downloaded(and_exists=True)
+                        or not only_downloaded):
                     episodes.append(episode)
         return episodes
 
@@ -105,14 +104,21 @@ class gPodderSyncUI(object):
                 done_callback()
             return
 
-        if not device.open():
+        try:
+            if not device.open():
+                self._show_message_cannot_open()
+                if done_callback:
+                    done_callback()
+                return
+            else:
+                # Only set if device is configured and opened successfully
+                self.device = device
+        except Exception as err:
+            logger.error('opening %s failed with %s', device.get_device_description(), err.message)
             self._show_message_cannot_open()
             if done_callback:
                 done_callback()
             return
-        else:
-            # Only set if device is configured and opened successfully
-            self.device = device
 
         if episodes is None:
             force_played = False
@@ -126,8 +132,8 @@ class gPodderSyncUI(object):
                     return False
 
                 # Might not be synced if it's played already
-                if (not force_played and
-                        self._config.device_sync.skip_played_episodes):
+                if (not force_played
+                        and self._config.device_sync.skip_played_episodes):
                     return False
 
                 # In all other cases, we expect the episode to be
@@ -239,7 +245,7 @@ class gPodderSyncUI(object):
                                 # get episodes to be written to playlist
                                 episodes_for_playlist = sorted(current_channel.get_episodes(gpodder.STATE_DOWNLOADED),
                                                                key=lambda ep: ep.published)
-                                episode_keys = list(map(playlist.get_absolute_filename_for_playlist,
+                                episode_keys = list(map(playlist.get_path_to_filename_for_playlist,
                                                         episodes_for_playlist))
 
                                 episode_dict = dict(list(zip(episode_keys, episodes_for_playlist)))
@@ -249,13 +255,16 @@ class gPodderSyncUI(object):
                                 # if playlist doesn't exist (yet) episodes_in_playlist will be empty
                                 if episodes_in_playlists:
                                     for episode_filename in episodes_in_playlists:
-                                        if not playlist.mountpoint.resolve_relative_path(episode_filename).query_exists():
+                                        if ((not self._config.device_sync.playlists.use_absolute_path
+                                        and not playlist.playlist_folder.resolve_relative_path(episode_filename).query_exists())
+                                        or (self._config.device_sync.playlists.use_absolute_path
+                                        and not playlist.mountpoint.resolve_relative_path(episode_filename).query_exists())):
                                             # episode was synced but no longer on device
                                             # i.e. must have been deleted by user, so delete from gpodder
                                             try:
                                                 episodes_to_delete.append(episode_dict[episode_filename])
-                                            except KeyError as ioe:
-                                                logger.warn('Episode %s, removed from device has already been deleted from gpodder',
+                                            except KeyError:
+                                                logger.warning('Episode %s, removed from device has already been deleted from gpodder',
                                                             episode_filename)
                     # delete all episodes from gpodder (will prompt user)
 
@@ -309,9 +318,9 @@ class gPodderSyncUI(object):
         def cleanup_episodes():
             # 'skip_played_episodes' must be used or else all the
             # played tracks will be copied then immediately deleted
-            if (self._config.device_sync.delete_deleted_episodes or
-                (self._config.device_sync.delete_played_episodes and
-                 self._config.device_sync.skip_played_episodes)):
+            if (self._config.device_sync.delete_deleted_episodes
+                or (self._config.device_sync.delete_played_episodes
+                    and self._config.device_sync.skip_played_episodes)):
                 all_episodes = self._filter_sync_episodes(
                     channels, only_downloaded=False)
                 for local_episode in all_episodes:

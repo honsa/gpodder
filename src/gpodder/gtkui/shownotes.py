@@ -18,7 +18,6 @@
 #
 import html
 import logging
-import re
 from urllib.parse import urlparse
 
 import gpodder
@@ -40,11 +39,20 @@ logger = logging.getLogger(__name__)
 
 has_webkit2 = False
 try:
-    gi.require_version('WebKit2', '4.0')
+    gi.require_version('WebKit2', '4.1')
     from gi.repository import WebKit2
     has_webkit2 = True
+    logger.info('Webkit2 4.1 loaded')
 except (ImportError, ValueError):
-    logger.info('No WebKit2 gobject bindings, so no HTML shownotes')
+    logger.info('Webkit2 4.1 not found. Trying 4.0')
+    try:
+        gi.require_version('Webkit2', '4.0')
+        from gi.repository import WebKit2
+        has_webkit2 = True
+        logger.info('Webkit2 4.0 loaded')
+    except (ImportError, ValueError):
+        logger.info('No WebKit2 gobject bindings, so no HTML shownotes')
+        has_webkit2 = False
 
 
 def get_shownotes(enable_html, pane):
@@ -202,7 +210,8 @@ class gPodderShownotesText(gPodderShownotes):
         heading = episode.title
         subheading = _('from %s') % (episode.channel.title)
         details = self.details_fmt % {
-            'date': util.format_date(episode.published),
+            'date': '{} {}'.format(episode.published_formatted('%H:%M', ''),
+                util.format_date(episode.published)),
             'size': util.format_filesize(episode.file_size, digits=1)
             if episode.file_size > 0 else "-",
             'duration': episode.get_play_info_string()}
@@ -219,7 +228,7 @@ class gPodderShownotesText(gPodderShownotes):
         self.text_buffer.insert_at_cursor('\n')
         self.text_buffer.insert_with_tags_by_name(self.text_buffer.get_end_iter(), details, 'details')
         self.text_buffer.insert_at_cursor('\n\n')
-        for target, text in util.extract_hyperlinked_text(episode.description_html or episode.description):
+        for target, text in util.extract_hyperlinked_text(episode.html_description()):
             hyperlinks.append((self.text_buffer.get_char_count(), target))
             if target:
                 self.text_buffer.insert_with_tags_by_name(
@@ -271,7 +280,8 @@ class gPodderShownotesText(gPodderShownotes):
         return False
 
     def hyperlink_at_pos(self, pos):
-        """
+        """Return the hyperlink in the given position, or None.
+
         :param int pos: offset in text buffer
         :return str: hyperlink target at pos if any or None
         """
@@ -343,19 +353,17 @@ class gPodderShownotesHTML(gPodderShownotes):
         heading = '<h3>%s</h3>' % html.escape(episode.title)
         subheading = _('from %s') % html.escape(episode.channel.title)
         details = '<small>%s</small>' % html.escape(self.details_fmt % {
-            'date': util.format_date(episode.published),
+            'date': '{} {}'.format(episode.published_formatted('%H:%M', ''),
+                util.format_date(episode.published)),
             'size': util.format_filesize(episode.file_size, digits=1)
             if episode.file_size > 0 else "-",
             'duration': episode.get_play_info_string()})
         header_html = _('<div id="gpodder-title">\n%(heading)s\n<p>%(subheading)s</p>\n<p>%(details)s</p></div>\n') \
-            % dict(heading=heading, subheading=subheading, details=details)
-        description_html = episode.description_html
-        if not description_html:
-            description_html = re.sub(r'\n', '<br>\n', episode.description)
+            % {'heading': heading, 'subheading': subheading, 'details': details}
         # uncomment to prevent background override in html shownotes
         # self.manager.remove_all_style_sheets ()
         logger.debug("base uri: %s (chan:%s)", self._base_uri, episode.channel.url)
-        self.html_view.load_html(header_html + description_html, self._base_uri)
+        self.html_view.load_html(header_html + episode.html_description(), self._base_uri)
         # uncomment to show web inspector
         # self.html_view.get_inspector().show()
         self.episode = episode
@@ -411,8 +419,9 @@ class gPodderShownotesHTML(gPodderShownotes):
             if req.get_uri() in (self._base_uri, 'about:blank'):
                 decision.use()
             else:
-                logger.debug("refusing to go to %s (base URI=%s)", req.get_uri(), self._base_uri)
+                # Avoid opening the page inside the WebView and open in the browser instead
                 decision.ignore()
+                util.open_website(req.get_uri())
             return False
         else:
             decision.use()

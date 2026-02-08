@@ -23,8 +23,6 @@
 # Thomas Perl <thp@gpodder.org>; 2014-10-22
 #
 
-import json
-import os
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -35,13 +33,25 @@ from gpodder import opml, util
 _ = gpodder.gettext
 
 
+class JustAWarning(Exception):
+    """Use this exception in providers to avoid a stack trace shown to the user.
+
+    Warning should be an already localized error message.
+    """
+
+    def __init__(self, warning):
+        super().__init__(self, warning)
+        self.warning = warning
+
+
 class DirectoryEntry(object):
-    def __init__(self, title, url, image=None, subscribers=-1, description=None):
+    def __init__(self, title, url, image=None, subscribers=-1, description=None, section=None):
         self.title = title
         self.url = url
         self.image = image
         self.subscribers = subscribers
         self.description = description
+        self.section = section
 
 
 class DirectoryTag(object):
@@ -60,36 +70,40 @@ class Provider(object):
 
     def on_search(self, query):
         # Should return a list of DirectoryEntry objects
-        raise NotImplemented()
+        raise NotImplementedError()
 
     def on_url(self, url):
         # Should return a list of DirectoryEntry objects
-        raise NotImplemented()
+        raise NotImplementedError()
 
     def on_file(self, filename):
         # Should return a list of DirectoryEntry objects
-        raise NotImplemented()
+        raise NotImplementedError()
 
     def on_tag(self, tag):
         # Should return a list of DirectoryEntry objects
-        raise NotImplemented()
+        raise NotImplementedError()
 
     def on_static(self):
         # Should return a list of DirectoryEntry objects
-        raise NotImplemented()
+        raise NotImplementedError()
 
     def get_tags(self):
         # Should return a list of DirectoryTag objects
-        raise NotImplemented()
+        raise NotImplementedError()
 
 
 def directory_entry_from_opml(url):
-    return [DirectoryEntry(d['title'], d['url'], description=d['description']) for d in opml.Importer(url).items]
+    return [DirectoryEntry(d['title'], d['url'], description=d['description'], section=d['section']) for d in opml.Importer(url).items]
 
 
 def directory_entry_from_mygpo_json(url):
+    r = util.urlopen(url)
+    if not r.ok:
+        raise Exception('%s: %d %s' % (url, r.status_code, r.reason))
+
     return [DirectoryEntry(d['title'], d['url'], d['logo_url'], d['subscribers'], d['description'])
-            for d in util.urlopen(url).json()]
+            for d in r.json()]
 
 
 class GPodderNetSearchProvider(Provider):
@@ -152,7 +166,13 @@ class GPodderNetTagsProvider(Provider):
         return directory_entry_from_mygpo_json('http://gpodder.net/api/2/tag/%s/50.json' % urllib.parse.quote(tag))
 
     def get_tags(self):
-        return [DirectoryTag(d['tag'], d['usage']) for d in util.urlopen('http://gpodder.net/api/2/tags/40.json').json()]
+        url = 'http://gpodder.net/api/2/tags/40.json'
+
+        r = util.urlopen(url)
+        if not r.ok:
+            raise Exception('%s: %d %s' % (url, r.status_code, r.reason))
+
+        return [DirectoryTag(d['tag'], d['usage']) for d in r.json()]
 
 
 class SoundcloudSearchProvider(Provider):
@@ -165,8 +185,18 @@ class SoundcloudSearchProvider(Provider):
         # XXX: This cross-import of the plugin here is bad, but it
         # works for now (no proper plugin architecture...)
         from gpodder.plugins.soundcloud import search_for_user
-
-        return [DirectoryEntry(entry['username'], entry['permalink_url']) for entry in search_for_user(query)]
+        results = search_for_user(query)
+        if isinstance(results, list):
+            return [DirectoryEntry(entry['username'], entry['permalink_url']) for entry in results]
+        # {'code': 401, 'message': '', 'status': '401 - Unauthorized',
+        #   'link': 'https://developers.soundcloud.com/docs/api/explorer/open-api',
+        #  'errors': [], 'error': None}
+        if isinstance(results, dict) and results.get('code') == 401:
+            raise JustAWarning(_("Sorry, soundcloud search doesn't work anymore."))
+        if isinstance(results, dict) and 'code' in results:
+            results['msg'] = results.get('message') or results.get('error') or results.get('status')
+            raise JustAWarning(_("Error querying soundcloud: %(code)s %(msg)s") % results)
+        raise Exception(_("Unexpected response from soundcloud: %r") % (results, ))
 
 
 class FixedOpmlFileProvider(Provider):

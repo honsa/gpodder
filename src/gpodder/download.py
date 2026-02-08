@@ -25,27 +25,25 @@
 #  Based on libwget.py (2005-10-29)
 #
 
-import collections
-import email
 import glob
 import logging
 import mimetypes
 import os
 import os.path
 import shutil
-import socket
 import threading
 import time
 import urllib.error
+from abc import ABC, abstractmethod
 
 import requests
 from requests.adapters import HTTPAdapter
-from requests.exceptions import ConnectionError, HTTPError, RequestException
+from requests.exceptions import HTTPError, RequestException
 from requests.packages.urllib3.exceptions import MaxRetryError
 from requests.packages.urllib3.util.retry import Retry
 
 import gpodder
-from gpodder import registry, util
+from gpodder import config, registry, util
 
 logger = logging.getLogger(__name__)
 
@@ -54,11 +52,27 @@ _ = gpodder.gettext
 REDIRECT_RETRIES = 3
 
 
-class CustomDownload:
-    """ abstract class for custom downloads. DownloadTask call retrieve_resume() on it """
+class CustomDownload(ABC):
+    """Abstract class for custom downloads. DownloadTask call retrieve_resume() on it."""
 
-    def retrieve_resume(self, tempname, reporthook):
+    @property
+    @abstractmethod
+    def partial_filename(self):
+        """Full path to the temporary file actually being downloaded.
+
+        (downloaders may not support setting a tempname).
         """
+        ...
+
+    @partial_filename.setter
+    @abstractmethod
+    def partial_filename(self, val):
+        ...
+
+    @abstractmethod
+    def retrieve_resume(self, tempname, reporthook):
+        """Download files, return (headers, real_url).
+
         :param str tempname: temporary filename for the download
         :param func(number, number, number) reporthook: callback for download progress (count, blockSize, totalSize)
         :return dict(str, str), str: (headers, real_url)
@@ -66,20 +80,20 @@ class CustomDownload:
         return {}, None
 
 
-class CustomDownloader:
+class CustomDownloader(ABC):
     """
     abstract class for custom downloaders.
 
     DownloadTask calls custom_downloader to get a CustomDownload
     """
 
+    @abstractmethod
     def custom_downloader(self, config, episode):
-        """
-        if this custom downloader has a custom download method (e.g. youtube-dl),
-        return a CustomDownload. Else return None
+        """Return a CustomDownload if this downloader has a custom download method.
+
         :param config: gpodder config (e.g. to get preferred video format)
         :param model.PodcastEpisode episode: episode to download
-        :return CustomDownload: object used to download the episode
+        :return CustomDownload: object used to download the episode or None
         """
         return None
 
@@ -108,8 +122,7 @@ class ContentRange(object):
     # LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
     # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
     # WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-    """
-    Represents the Content-Range header
+    """Represents the Content-Range header.
 
     This header is ``start-stop/length``, where stop and length can be
     ``*`` (represented as None in the attributes).
@@ -140,7 +153,8 @@ class ContentRange(object):
         return 'bytes %s-%s/%s' % (self.start, stop, length)
 
     def __iter__(self):
-        """
+        """Iterate through a ContentRange.
+
         Mostly so you can unpack this, like:
 
             start, stop, length = res.content_range
@@ -149,24 +163,22 @@ class ContentRange(object):
 
     @classmethod
     def parse(cls, value):
-        """
-        Parse the header.  May return None if it cannot parse.
-        """
+        """Parse the header.  May return None if it cannot parse."""
         if value is None:
             return None
         value = value.strip()
         if not value.startswith('bytes '):
-            # Unparseable
+            # Unparsable
             return None
         value = value[len('bytes '):].strip()
         if '/' not in value:
             # Invalid, no length given
             return None
-        range, length = value.split('/', 1)
-        if '-' not in range:
+        startstop, length = value.split('/', 1)
+        if '-' not in startstop:
             # Invalid, no range
             return None
-        start, end = range.split('-', 1)
+        start, end = startstop.split('-', 1)
         try:
             start = int(start)
             if end == '*':
@@ -186,10 +198,12 @@ class ContentRange(object):
             return cls(start, end - 1, length)
 
 
-class DownloadCancelledException(Exception): pass
+class DownloadCancelledException(Exception):
+    pass
 
 
-class DownloadNoURLException(Exception): pass
+class DownloadNoURLException(Exception):
+    pass
 
 
 class gPodderDownloadHTTPError(Exception):
@@ -204,7 +218,7 @@ class DownloadURLOpener:
     # Sometimes URLs are not escaped correctly - try to fix them
     # (see RFC2396; Section 2.4.3. Excluded US-ASCII Characters)
     # FYI: The omission of "%" in the list is to avoid double escaping!
-    ESCAPE_CHARS = dict((ord(c), '%%%x' % ord(c)) for c in ' <>#"{}|\\^[]`')
+    ESCAPE_CHARS = {ord(c): '%%%x' % ord(c) for c in ' <>#"{}|\\^[]`'}
 
     def __init__(self, channel, max_retries=3):
         super().__init__()
@@ -212,7 +226,7 @@ class DownloadURLOpener:
         self.max_retries = max_retries
 
     def init_session(self):
-        """ init a session with our own retry codes + retry count """
+        """Init a session with our own retry codes + retry count."""
         # I add a few retries for redirects but it means that I will allow max_retries + REDIRECT_RETRIES
         # if encountering max_retries connect and REDIRECT_RETRIES read for instance
         retry_strategy = Retry(
@@ -231,20 +245,19 @@ class DownloadURLOpener:
 # The following is based on Python's urllib.py "URLopener.retrieve"
 # Also based on http://mail.python.org/pipermail/python-list/2001-October/110069.html
 
-    def retrieve_resume(self, url, filename, reporthook=None, data=None):
-        """Download files from an URL; return (headers, real_url)
+    def retrieve_resume(self, url, filename, reporthook=None, data=None, disable_auth=False):
+        """Download files from an URL; return (headers, real_url).
 
         Resumes a download if the local filename exists and
         the server supports download resuming.
         """
-
         current_size = 0
         tfp = None
         headers = {
             'User-agent': gpodder.user_agent
         }
 
-        if self.channel.auth_username or self.channel.auth_password:
+        if (self.channel.auth_username or self.channel.auth_password) and not disable_auth:
             logger.debug('Authenticating as "%s"', self.channel.auth_username)
             auth = (self.channel.auth_username, self.channel.auth_password)
         else:
@@ -258,7 +271,7 @@ class DownloadURLOpener:
                 if current_size > 0:
                     headers['Range'] = 'bytes=%s-' % (current_size)
             except:
-                logger.warn('Cannot resume download: %s', filename, exc_info=True)
+                logger.warning('Cannot resume download: %s', filename, exc_info=True)
                 tfp = None
                 current_size = 0
 
@@ -268,16 +281,23 @@ class DownloadURLOpener:
         # Fix a problem with bad URLs that are not encoded correctly (bug 549)
         url = url.translate(self.ESCAPE_CHARS)
 
+        proxies = config._proxies
         session = self.init_session()
+        logger.debug(f"DownloadURLOpener.retrieve_resume(): url: {url}, proxies: {proxies}")
         with session.get(url,
                          headers=headers,
                          stream=True,
                          auth=auth,
+                         proxies=proxies,
                          timeout=gpodder.SOCKET_TIMEOUT) as resp:
             try:
                 resp.raise_for_status()
             except HTTPError as e:
-                raise gPodderDownloadHTTPError(url, resp.status_code, str(e))
+                if auth is not None:
+                    # Try again without authentication (bug 1296)
+                    return self.retrieve_resume(url, filename, reporthook, data, True)
+                else:
+                    raise gPodderDownloadHTTPError(url, resp.status_code, str(e))
 
             headers = resp.headers
 
@@ -285,14 +305,14 @@ class DownloadURLOpener:
                 # We told the server to resume - see if she agrees
                 # See RFC2616 (206 Partial Content + Section 14.16)
                 # XXX check status code here, too...
-                range = ContentRange.parse(headers.get('content-range', ''))
-                if range is None or range.start != current_size:
+                conrange = ContentRange.parse(headers.get('content-range', ''))
+                if conrange is None or conrange.start != current_size:
                     # Ok, that did not work. Reset the download
                     # TODO: seek and truncate if content-range differs from request
                     tfp.close()
                     tfp = open(filename, 'wb')
                     current_size = 0
-                    logger.warn('Cannot resume: Invalid Content-Range (RFC2616).')
+                    logger.warning('Cannot resume: Invalid Content-Range (RFC2616).')
 
             result = headers, resp.url
             bs = 1024 * 8
@@ -327,12 +347,22 @@ class DefaultDownload(CustomDownload):
         self._config = config
         self.__episode = episode
         self._url = url
+        self.__partial_filename = None
+
+    @property
+    def partial_filename(self):
+        return self.__partial_filename
+
+    @partial_filename.setter
+    def partial_filename(self, val):
+        self.__partial_filename = val
 
     def retrieve_resume(self, tempname, reporthook):
         url = self._url
         logger.info("Downloading %s", url)
         max_retries = max(0, self._config.auto.retries)
         downloader = DownloadURLOpener(self.__episode.channel, max_retries=max_retries)
+        self.partial_filename = tempname
 
         # Retry the download on incomplete download (other retries are done by the Retry strategy)
         for retry in range(max_retries + 1):
@@ -345,12 +375,13 @@ class DefaultDownload(CustomDownload):
                     tempname, reporthook=reporthook)
                 # If we arrive here, the download was successful
                 break
-            except urllib.error.ContentTooShortError as ctse:
+            except urllib.error.ContentTooShortError:
                 if retry < max_retries:
                     logger.info('Content too short: %s - will retry.',
                             url)
                     continue
                 raise
+
         return (headers, real_url)
 
 
@@ -384,7 +415,7 @@ class DownloadQueueWorker(object):
             if not self.continue_check_callback(self):
                 return
 
-            task = self.queue.get_next()
+            task = self.queue.get_next() if self.queue.enabled else None
             if not task:
                 logger.info('No more tasks for %s to carry out.', self)
                 break
@@ -406,6 +437,7 @@ class ForceDownloadWorker(object):
         logger.info('Starting new thread: %s', self)
         logger.info('%s is processing: %s', self, self.task)
         self.task.run()
+        self.task.recycle()
 
 
 class DownloadQueueManager(object):
@@ -416,27 +448,36 @@ class DownloadQueueManager(object):
         self.worker_threads_access = threading.RLock()
         self.worker_threads = []
 
+    def disable(self):
+        self.tasks.enabled = False
+
+    def enable(self):
+        self.tasks.enabled = True
+        self.__spawn_threads()
+
     def __exit_callback(self, worker_thread):
         with self.worker_threads_access:
             self.worker_threads.remove(worker_thread)
 
     def __continue_check_callback(self, worker_thread):
         with self.worker_threads_access:
-            if len(self.worker_threads) > self._config.max_downloads and \
-                    self._config.max_downloads_enabled:
+            if len(self.worker_threads) > self._config.limit.downloads.concurrent and \
+                    self._config.limit.downloads.enabled:
                 self.worker_threads.remove(worker_thread)
                 return False
             else:
                 return True
 
     def __spawn_threads(self):
-        """Spawn new worker threads if necessary
-        """
+        """Spawn new worker threads if necessary."""
+        if not self.tasks.enabled:
+            return
+
         with self.worker_threads_access:
             work_count = self.tasks.available_work_count()
-            if self._config.max_downloads_enabled:
+            if self._config.limit.downloads.enabled:
                 # always allow at least 1 download
-                spawn_limit = max(int(self._config.max_downloads), 1)
+                spawn_limit = max(int(self._config.limit.downloads.concurrent), 1)
             else:
                 spawn_limit = self._config.limit.downloads.concurrent_max
             running = len(self.worker_threads)
@@ -461,14 +502,16 @@ class DownloadQueueManager(object):
                 util.run_in_background(worker.run)
 
     def queue_task(self, task):
-        """Marks a task as queued
-        """
+        """Mark a task as queued."""
         self.tasks.queue_task(task)
         self.__spawn_threads()
 
+    def has_workers(self):
+        return len(self.worker_threads) > 0
+
 
 class DownloadTask(object):
-    """An object representing the download task of an episode
+    """An object representing the download task of an episode.
 
     You can create a new download task like this:
 
@@ -497,7 +540,7 @@ class DownloadTask(object):
     of downloading data, this can take a while when the Internet is
     busy).
 
-    The "status_changed" attribute gets set to True everytime the
+    The "status_changed" attribute gets set to True every time the
     "status" attribute changes its value. After you get the value of
     the "status_changed" attribute, it is always reset to False:
 
@@ -535,18 +578,19 @@ class DownloadTask(object):
 
     The UI can call the method "notify_as_finished()" to determine if
     this episode still has still to be shown as "finished" download
-    in a notification window. This will return True only the first time
+    in a notification window. This will return True only the first time.
     it is called when the status is DONE. After returning True once,
     it will always return False afterwards.
 
     The same thing works for failed downloads ("notify_as_failed()").
     """
+
     # Possible states this download task can be in
     STATUS_MESSAGE = (_('Queued'), _('Queued'), _('Downloading'),
             _('Finished'), _('Failed'), _('Cancelling'), _('Cancelled'), _('Pausing'), _('Paused'))
     (NEW, QUEUED, DOWNLOADING, DONE, FAILED, CANCELLING, CANCELLED, PAUSING, PAUSED) = list(range(9))
 
-    # Wheter this task represents a file download or a device sync operation
+    # Whether this task represents a file download or a device sync operation
     ACTIVITY_DOWNLOAD, ACTIVITY_SYNCHRONIZE = list(range(2))
 
     # Minimum time between progress updates (in seconds)
@@ -558,7 +602,7 @@ class DownloadTask(object):
     def __enter__(self):
         return self.__lock.acquire()
 
-    def __exit__(self, type, value, traceback):
+    def __exit__(self, exception_type, value, traceback):
         self.__lock.release()
 
     def __get_status(self):
@@ -612,6 +656,18 @@ class DownloadTask(object):
 
     downloader = property(fget=__get_downloader, fset=__set_downloader)
 
+    def can_queue(self):
+        return self.status in (self.CANCELLED, self.PAUSED, self.FAILED)
+
+    def unpause(self):
+        with self:
+            # Resume a downloading task that was transitioning to paused
+            if self.status == self.PAUSING:
+                self.status = self.DOWNLOADING
+
+    def can_pause(self):
+        return self.status in (self.DOWNLOADING, self.QUEUED)
+
     def pause(self):
         with self:
             # Pause a queued download
@@ -620,6 +676,10 @@ class DownloadTask(object):
             # Request pause of a running download
             elif self.status == self.DOWNLOADING:
                 self.status = self.PAUSING
+                # download rate limited tasks sleep and take longer to transition from the PAUSING state to the PAUSED state
+
+    def can_cancel(self):
+        return self.status in (self.DOWNLOADING, self.QUEUED, self.PAUSED, self.FAILED)
 
     def cancel(self):
         with self:
@@ -632,9 +692,12 @@ class DownloadTask(object):
             elif self.status == self.DOWNLOADING:
                 self.status = self.CANCELLING
 
+    def can_remove(self):
+        return self.status in (self.CANCELLED, self.FAILED, self.DONE)
+
     def delete_partial_files(self):
         temporary_files = [self.tempname]
-        # YoutubeDL creates .partial.* files for adaptive formats
+        # youtube-dl creates .partial.* files for adaptive formats
         temporary_files += glob.glob('%s.*' % self.tempname)
 
         for tempfile in temporary_files:
@@ -663,6 +726,7 @@ class DownloadTask(object):
         self.speed = 0.0
         self.progress = 0.0
         self.error_message = None
+        self.custom_downloader = None
 
         # Have we already shown this task in a notification?
         self._notification_shown = False
@@ -670,8 +734,8 @@ class DownloadTask(object):
         # Variables for speed limit and speed calculation
         self.__start_time = 0
         self.__start_blocks = 0
-        self.__limit_rate_value = self._config.limit_rate_value
-        self.__limit_rate = self._config.limit_rate
+        self.__limit_rate_value = self._config.limit.bandwidth.kbps
+        self.__limit_rate = self._config.limit.bandwidth.enabled
 
         # Progress update functions
         self._progress_updated = None
@@ -692,6 +756,11 @@ class DownloadTask(object):
 
         # Store a reference to this task in the episode
         episode.download_task = self
+
+    def reuse(self):
+        if not os.path.exists(self.tempname):
+            # partial file was deleted when cancelled, recreate it
+            open(self.tempname, 'w').close()
 
     def notify_as_finished(self):
         if self.status == DownloadTask.DONE:
@@ -748,18 +817,18 @@ class DownloadTask(object):
             now = time.time()
             if self.__start_time > 0:
                 # Has rate limiting been enabled or disabled?
-                if self.__limit_rate != self._config.limit_rate:
+                if self.__limit_rate != self._config.limit.bandwidth.enabled:
                     # If it has been enabled then reset base time and block count
-                    if self._config.limit_rate:
+                    if self._config.limit.bandwidth.enabled:
                         self.__start_time = now
                         self.__start_blocks = count
-                    self.__limit_rate = self._config.limit_rate
+                    self.__limit_rate = self._config.limit.bandwidth.enabled
 
                 # Has the rate been changed and are we currently limiting?
-                if self.__limit_rate_value != self._config.limit_rate_value and self.__limit_rate:
+                if self.__limit_rate_value != self._config.limit.bandwidth.kbps and self.__limit_rate:
                     self.__start_time = now
                     self.__start_blocks = count
-                    self.__limit_rate_value = self._config.limit_rate_value
+                    self.__limit_rate_value = self._config.limit.bandwidth.kbps
 
                 passed = now - self.__start_time
                 if passed > 0:
@@ -774,10 +843,10 @@ class DownloadTask(object):
 
             self.speed = float(speed)
 
-            if self._config.limit_rate and speed > self._config.limit_rate_value:
+            if self._config.limit.bandwidth.enabled and speed > self._config.limit.bandwidth.kbps:
                 # calculate the time that should have passed to reach
                 # the desired download rate and wait if necessary
-                should_have_passed = (count - self.__start_blocks) * blockSize / (self._config.limit_rate_value * 1024.0)
+                should_have_passed = (count - self.__start_blocks) * blockSize / (self._config.limit.bandwidth.kbps * 1024.0)
                 if should_have_passed > passed:
                     # sleep a maximum of 10 seconds to not cause time-outs
                     delay = min(10.0, float(should_have_passed - passed))
@@ -800,6 +869,7 @@ class DownloadTask(object):
         with self:
             if self.status == DownloadTask.CANCELLING:
                 self.status = DownloadTask.CANCELLED
+                self.__episode._download_error = None
                 self.delete_partial_files()
                 self.progress = 0.0
                 self.speed = 0.0
@@ -838,7 +908,14 @@ class DownloadTask(object):
             else:
                 downloader = DefaultDownloader.custom_downloader(self._config, self.episode)
 
+            self.custom_downloader = downloader
             headers, real_url = downloader.retrieve_resume(self.tempname, self.status_updated)
+
+            # Podcastparser defaults published to zero if pubDate is not specified in feed,
+            # so only change the file timestamp if non-zero.
+            # This does mean that episodes released exactly on the epoch will get current time.
+            if self.__episode.published != 0 and self.__episode.published < time.time():
+                os.utime(self.tempname, (self.__episode.published, self.__episode.published))
 
             new_mimetype = headers.get('content-type', self.__episode.mime_type)
             old_mimetype = self.__episode.mime_type
@@ -901,6 +978,7 @@ class DownloadTask(object):
         except DownloadCancelledException:
             logger.info('Download has been cancelled/paused: %s', self)
             if self.status == DownloadTask.CANCELLING:
+                self.__episode._download_error = None
                 self.delete_partial_files()
                 self.progress = 0.0
                 self.speed = 0.0
@@ -908,13 +986,13 @@ class DownloadTask(object):
         except DownloadNoURLException:
             result = DownloadTask.FAILED
             self.error_message = _('Episode has no URL to download')
-        except urllib.error.ContentTooShortError as ctse:
+        except urllib.error.ContentTooShortError:
             result = DownloadTask.FAILED
             self.error_message = _('Missing content from server')
-        except ConnectionError as ce:
+        except requests.ConnectionError as ce:
             # special case request exception
             result = DownloadTask.FAILED
-            logger.error('Download failed: %s', str(ce), exc_info=True)
+            logger.error('Download failed: %s', str(ce))
             d = {'host': ce.args[0].pool.host, 'port': ce.args[0].pool.port}
             self.error_message = _("Couldn't connect to server %(host)s:%(port)s" % d)
         except RequestException as re:
@@ -922,20 +1000,19 @@ class DownloadTask(object):
             if isinstance(re.args[0], MaxRetryError):
                 re = re.args[0]
             logger.error('%s while downloading "%s"', str(re),
-                    self.__episode.title, exc_info=True)
+                    self.__episode.title)
             result = DownloadTask.FAILED
             d = {'error': str(re)}
             self.error_message = _('Request Error: %(error)s') % d
         except IOError as ioe:
             logger.error('%s while downloading "%s": %s', ioe.strerror,
-                    self.__episode.title, ioe.filename, exc_info=True)
+                    self.__episode.title, ioe.filename)
             result = DownloadTask.FAILED
             d = {'error': ioe.strerror, 'filename': ioe.filename}
             self.error_message = _('I/O Error: %(error)s: %(filename)s') % d
         except gPodderDownloadHTTPError as gdhe:
             logger.error('HTTP %s while downloading "%s": %s',
-                    gdhe.error_code, self.__episode.title, gdhe.error_message,
-                    exc_info=True)
+                    gdhe.error_code, self.__episode.title, gdhe.error_message)
             result = DownloadTask.FAILED
             d = {'code': gdhe.error_code, 'message': gdhe.error_message}
             self.error_message = _('HTTP Error %(code)s: %(message)s') % d

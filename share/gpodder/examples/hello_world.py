@@ -40,9 +40,7 @@ class gPodderExtension:
         logger.info('Extension is being unloaded.')
 
     def on_ui_object_available(self, name, ui_object):
-        """
-        Called by gPodder when ui is ready.
-        """
+        """Called by gPodder when ui is ready."""  # noqa: D401
         if name == 'gpodder-gtk':
             self.gpodder = ui_object
 
@@ -60,7 +58,7 @@ class gPodderExtension:
 #
 # https://docs.python.org/3/library/subprocess.html#subprocess.Popen
 #
-# This is expecially important for extensions responding to
+# This is especially important for extensions responding to
 # on_episode_downloaded(), which runs whenever a download finishes.
 #
 # Otherwise that process will inherit ALL file descriptors gPodder

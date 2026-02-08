@@ -7,33 +7,68 @@
 # the Free Software Foundation; either version 2 of the License, or
 # (at your option) any later version.
 
-"""
-Deletes unneeded DLLs and checks DLL dependencies.
+"""Deletes unneeded DLLs and checks DLL dependencies.
+
 Execute with the build python, will figure out the rest.
 """
 
+import logging
 import os
 import subprocess
 import sys
+from functools import cache
 from multiprocessing import Process, Queue
 
 import gi  # isort:skip
-gi.require_version("GIRepository", "2.0")  # isort:skip
+
+girepository_version = 0
+try:
+    gi.require_version("GIRepository", "3.0")  # isort:skip
+    girepository_version = 3
+except ValueError:
+    try:
+        gi.require_version("GIRepository", "2.0")  # isort:skip
+        girepository_version = 2
+    except ValueError:
+        # let it crash
+        raise Exception("GIRepository version is not 3 or 2")
+
 from gi.repository import GIRepository  # isort:skip
 
 
-def _get_shared_libraries(q, namespace, version):
+def _get_shared_libraries(q, namespace, version, loglevel=logging.WARNING):
+    """Put a list of libraries into q, regardless of girepository_version."""
+    import multiprocessing
+    logger = multiprocessing.log_to_stderr(level=loglevel)
+
     repo = GIRepository.Repository()
-    repo.require(namespace, version, 0)
-    lib = repo.get_shared_library(namespace)
-    q.put(lib)
+    try:
+        repo.require(namespace, version, 0)
+        if girepository_version == 3:
+            libs = repo.get_shared_libraries(namespace)
+            logger.debug("repo.get_share_libraries(%s) returned: %s", namespace, libs)
+        elif girepository_version == 2:
+            ret = repo.get_shared_library(namespace)
+            logger.debug("repo.get_share_library(%s) returned: %s", namespace, ret)
+            if ret:
+                libs = ret.split(',')
+            else:
+                libs = []
+
+        q.put(libs)
+    except Exception as e:
+        logger.exception(e)
+        q.put([])
 
 
+@cache
 def get_shared_libraries(namespace, version):
+    """Return a list of libraries."""
     # we have to start a new process because multiple versions can't be loaded
     # in the same process
+    loglevel = logging.getLogger().getEffectiveLevel()
     q = Queue()
-    p = Process(target=_get_shared_libraries, args=(q, namespace, version))
+    p = Process(target=_get_shared_libraries, args=(q, namespace, version, loglevel))
     p.start()
     result = q.get()
     p.join()
@@ -45,16 +80,14 @@ def get_required_by_typelibs():
     repo = GIRepository.Repository()
     for tl in os.listdir(repo.get_search_path()[0]):
         namespace, version = os.path.splitext(tl)[0].split("-", 1)
-        lib = get_shared_libraries(namespace, version)
-        if lib:
-            libs = lib.lower().split(",")
-        else:
-            libs = []
+        logging.debug(f"get_require_by_typelibs(): calling get_shared_libraries({namespace}, {version})")
+        libs = get_shared_libraries(namespace, version)
         for lib in libs:
-            deps.add((namespace, version, lib))
+            deps.add((namespace, version, lib.lower()))
     return deps
 
 
+@cache
 def get_dependencies(filename):
     deps = []
     try:
@@ -68,6 +101,7 @@ def get_dependencies(filename):
         line = line.strip()
         if line.startswith("DLL Name:"):
             deps.append(line.split(":", 1)[-1].strip().lower())
+    logging.debug(f"get_dependencies({filename}): returning: {deps}")
     return deps
 
 
@@ -81,6 +115,8 @@ def find_lib(root, name):
         return True
     elif name.startswith("msvcr"):
         return True
+    elif name.startswith("api-ms-win-"):
+        return True
     return False
 
 
@@ -91,6 +127,7 @@ def get_lib_path(root, name):
 
 
 def get_things_to_delete(root):
+    logging.debug(f"get_things_to_delete(root):\n root: {root}")
     extensions = [".exe", ".pyd", ".dll"]
 
     all_libs = set()
@@ -104,10 +141,14 @@ def get_things_to_delete(root):
                 if ext_lower == ".exe":
                     # we use .exe as dependency root
                     needed.add(lib)
+                    logging.debug(f"{lib} added to needed set")
                 all_libs.add(f.lower())
+                logging.debug(f"{f.lower()} added to all_libs set")
                 for lib in get_dependencies(path):
                     all_libs.add(lib)
+                    logging.debug(f"{lib} added to all_libs set")
                     needed.add(lib)
+                    logging.debug(f"{lib} added to needed set")
                     if not find_lib(root, lib):
                         print("MISSING:", path, lib)
 
@@ -123,10 +164,15 @@ def get_things_to_delete(root):
         if path:
             to_delete.append(path)
 
+    logging.debug(f"returning to_delete: {to_delete}")
     return to_delete
 
 
 def main(argv):
+    if "--debug" in argv[1:]:
+        logging.getLogger().setLevel(logging.DEBUG)
+
+    logging.debug("GIRepository being used: %s", girepository_version)
     libs = get_things_to_delete(sys.prefix)
 
     if "--delete" in argv[1:]:

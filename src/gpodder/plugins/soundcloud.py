@@ -1,4 +1,3 @@
-#!/usr/bin/python
 # -*- coding: utf-8 -*-
 #
 # gPodder - A media aggregator and podcast client
@@ -21,7 +20,6 @@
 # Soundcloud.com API client module for gPodder
 # Thomas Perl <thp@gpodder.org>; 2009-11-03
 
-import email
 import json
 import logging
 import os
@@ -45,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 
 def soundcloud_parsedate(s):
-    """Parse a string into a unix timestamp
+    """Parse a string into a unix timestamp.
 
     Only strings provided by Soundcloud's API are
     parsed with this function (2009/11/03 13:37:00).
@@ -55,7 +53,7 @@ def soundcloud_parsedate(s):
 
 
 def get_metadata(url):
-    """Get file download metadata
+    """Get file download metadata.
 
     Returns a (size, type, name) from the given download
     URL. Will use the network connection to determine the
@@ -64,7 +62,6 @@ def get_metadata(url):
     track_response = util.urlopen(url)
     filesize = track_response.headers['content-length'] or '0'
     filetype = track_response.headers['content-type'] or 'application/octet-stream'
-    headers_s = '\n'.join('%s:%s' % (k, v) for k, v in list(track_response.headers.items()))
     filename = util.get_header_param(track_response.headers, 'filename', 'content-disposition') \
         or os.path.basename(os.path.dirname(url))
     track_response.close()
@@ -128,10 +125,11 @@ class SoundcloudUser(object):
         return user_info.get('id', None)
 
     def get_tracks(self, feed):
-        """Get a generator of tracks from a SC user
+        """Get a generator of tracks from a SC user.
 
         The generator will give you a dictionary for every
-        track it can find for its user."""
+        track it can find for its user.
+        """
         global CONSUMER_KEY
         try:
             json_url = ('https://api.soundcloud.com/users/%(user)s/%(feed)s.'
@@ -147,7 +145,7 @@ class SoundcloudUser(object):
             total_count = len(json_tracks)
 
             if len(tracks) == 0 and total_count > 0:
-                logger.warn("Download of all %i %s of user %s is disabled" %
+                logger.warning("Download of all %i %s of user %s is disabled" %
                             (total_count, feed, self.username))
             else:
                 logger.info("%i/%i downloadable tracks for user %s %s feed" %
@@ -167,7 +165,8 @@ class SoundcloudUser(object):
                 yield {
                     'title': track.get('title', track.get('permalink')) or _('Unknown track'),
                     'link': track.get('permalink_url') or 'https://soundcloud.com/' + self.username,
-                    'description': track.get('description') or _('No description available'),
+                    'description': util.remove_html_tags(track.get('description') or ''),
+                    'description_html': '',
                     'url': url,
                     'file_size': int(filesize),
                     'mime_type': filetype,
@@ -223,7 +222,7 @@ class SoundcloudFeed(model.Feed):
         if self.max_episodes > 0:
             tracks = tracks[:self.max_episodes]
 
-        seen_guids = set(track['guid'] for track in tracks)
+        seen_guids = {track['guid'] for track in tracks}
         episodes = []
 
         for track in tracks:
@@ -242,7 +241,7 @@ class SoundcloudFavFeed(SoundcloudFeed):
         super(SoundcloudFavFeed, self).__init__(username)
 
     def get_title(self):
-        return _('%s\'s favorites on Soundcloud') % self.username
+        return _("%s's favorites on Soundcloud") % self.username
 
     def get_link(self):
         return 'https://soundcloud.com/%s/favorites' % self.username
